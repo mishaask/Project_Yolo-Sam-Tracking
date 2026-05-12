@@ -1,0 +1,100 @@
+# Project-level persistent tracking memory.
+# This sits above YOLO/BoT-SORT and tries to keep stable global IDs even when
+# the tracker loses an object/person or assigns a new local track ID.
+
+max_missing_frames: 300
+max_reid_gap_frames: 360
+ema_alpha: 0.58
+stationary_movement_px: 3.0
+
+# Track stitching thresholds for non-person objects.
+min_stitch_score: 0.50
+max_center_distance_px: 340.0
+min_appearance_similarity: 0.13
+appearance_weight: 0.58
+iou_weight: 0.17
+proximity_weight: 0.25
+
+# Practical webcam filters for static room clutter.
+ignored_zones_norm:
+  - name: top_static_shelf
+    classes: ["suitcase", "backpack", "handbag"]
+    xyxy: [0.0, 0.0, 1.0, 0.16]
+
+min_conf_by_class:
+  person: 0.22
+  backpack: 0.25
+  handbag: 0.25
+  suitcase: 0.28
+
+min_area_ratio_by_class:
+  person: 0.015
+  backpack: 0.006
+  handbag: 0.004
+  suitcase: 0.006
+
+max_area_ratio_by_class:
+  person: 0.92
+  backpack: 0.70
+  handbag: 0.65
+  suitcase: 0.70
+
+same_class_nms_iou: 0.78
+reid_message_cooldown_frames: 120
+trail_length: 70
+
+# Classes whose SAM masks may affect memory/tracking geometry when --prefer-sam-masks is used.
+# Person is intentionally excluded: YOLO/BoT-SORT boxes are usually more stable for person ReID.
+sam_tracking_classes: ["backpack", "handbag", "suitcase", "trolley_bag", "suspicious_object", "dangerous_object", "knife", "weapon"]
+
+# Strict OSNet person ReID.
+# This version does NOT silently use the generic Torchvision fallback by default.
+person_reid:
+  enabled: true
+  backend: torchreid
+  model_name: osnet_x0_25
+  model_path: ""
+  image_height: 256
+  image_width: 128
+  allow_torchvision_fallback: false
+  require_backend: true
+
+# Person ReID scoring.
+person_min_stitch_score: 0.70
+person_min_appearance_similarity: 0.50
+person_min_secondary_similarity: 0.16
+person_deep_appearance_weight: 0.76
+person_secondary_appearance_weight: 0.07
+person_iou_weight: 0.05
+person_proximity_weight: 0.12
+
+# Snapshot-gallery memory. Good crops are stored as multiple OSNet snapshots
+# instead of continuously averaging every frame into one descriptor.
+person_gallery_size: 8
+person_gallery_duplicate_similarity: 0.985
+
+# Bad-crop guard: do not update person appearance from edge-clipped or partial crops.
+person_crop_edge_margin_ratio: 0.025
+person_crop_min_height_ratio: 0.28
+person_crop_min_area_ratio: 0.018
+person_crop_min_aspect_ratio: 0.16
+person_crop_max_aspect_ratio: 0.85
+person_crop_allow_bottom_edge: true
+
+# Entry/exit continuity. If a person exits right and re-enters right soon after,
+# the match receives a small boost, but OSNet similarity is still required.
+entry_exit_enabled: true
+entry_exit_edge_ratio: 0.055
+entry_exit_window_frames: 240
+entry_exit_same_side_bonus: 0.08
+
+# Offline merge pass, applied after video processing before tracks.csv/events.json are written.
+offline_merge:
+  enabled: true
+  max_gap_frames: 900
+  max_overlap_frames: 3
+  min_score: 0.66
+  min_primary_similarity: 0.58
+  secondary_weight: 0.12
+  gap_weight: 0.08
+  same_side_bonus: 0.08

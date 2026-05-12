@@ -1,0 +1,24 @@
+# BoT-SORT tracker configuration.
+# More forgiving than the previous version, because webcam demos often contain
+# partial person visibility, slow CPU FPS, and short occlusions by bags/hands.
+
+tracker_type: botsort
+
+track_high_thresh: 0.25
+track_low_thresh: 0.08
+new_track_thresh: 0.32
+track_buffer: 180
+match_thresh: 0.72
+fuse_score: true
+
+# Global motion compensation helps when the camera moves. For a fixed webcam it
+# is still usually fine, but you can set this to None if it causes issues.
+gmc_method: sparseOptFlow
+
+# ReID/appearance matching, useful after short occlusions.
+# If your installed Ultralytics version or hardware does not support this,
+# set with_reid: false.
+proximity_thresh: 0.45
+appearance_thresh: 0.20
+with_reid: true
+model: auto

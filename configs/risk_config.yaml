@@ -1,0 +1,26 @@
+association:
+  max_owner_distance_px: 180.0
+  min_owner_score: 0.45
+  motion_window_frames: 20
+
+  # Accumulated owner evidence. Larger score_gain attaches bags faster but can
+  # be less stable in crowds. score_decay controls how slowly old evidence fades.
+  score_decay: 0.98
+  score_gain: 0.12
+
+  # Relationship memory: a bag must be near/overlapping a person for enough
+  # frames before ownership is considered confirmed.
+  min_contact_frames: 45
+  contact_distance_px: 150.0
+  separation_distance_px: 260.0
+
+unattended_bag:
+  stationary_threshold_frames: 90
+  owner_distance_threshold_px: 250.0
+  separation_threshold_frames: 90
+  min_owner_contact_frames: 45
+  cooldown_frames: 60
+
+segmentation:
+  enabled: false
+  sam_every_n_frames: 5

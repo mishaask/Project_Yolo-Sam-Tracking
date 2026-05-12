@@ -1,0 +1,18 @@
+# YOLO dataset config for the screening prototype.
+# Put images and labels under datasets/screening_dataset/.
+
+path: datasets/screening_dataset
+train: images/train
+val: images/val
+
+names:
+  0: person
+  1: backpack
+  2: handbag
+  3: suitcase
+  4: trolley_bag
+  5: suspicious_object
+  6: dangerous_object
+  7: phone
+  8: laptop
+  9: bottle

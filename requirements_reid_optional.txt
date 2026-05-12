@@ -1,0 +1,9 @@
+# Strong person ReID backend used by this version.
+# Install this after the base requirements:
+#   pip install -r requirements_reid_optional.txt
+#
+# If plain torchreid fails on your Python version, use Python 3.10/3.11/3.12
+# or install torchreid from its source repository.
+torchreid
+gdown
+tensorboard>=2.16.0

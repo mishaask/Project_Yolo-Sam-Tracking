@@ -1,0 +1,17 @@
+person_classes:
+  - person
+
+bag_classes:
+  - backpack
+  - handbag
+  - suitcase
+  - trolley_bag
+
+everyday_classes:
+  - phone
+  - laptop
+  - bottle
+
+risk_classes:
+  - suspicious_object
+  - dangerous_object

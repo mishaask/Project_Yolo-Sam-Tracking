@@ -1,0 +1,18 @@
+# Stable Windows CPU stack for Torchreid/OSNet.
+# Use this instead of requirements.txt when latest torch breaks old torchreid.
+# Install with:
+#   python -m pip install -r requirements_windows_stable_reid.txt
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+ultralytics>=8.3.0
+opencv-python>=4.9.0
+numpy>=1.26.0,<2.0.0
+scipy>=1.11.0
+PyYAML>=6.0.1
+torch==2.5.1
+torchvision==0.20.1
+Pillow>=10.0.0
+torchreid==0.2.5
+gdown==4.7.3
+tensorboard>=2.16.0
