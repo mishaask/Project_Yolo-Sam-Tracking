@@ -158,7 +158,12 @@ screening_ai_project_deep_reid/
 │   └── pipeline.py               # Main pipeline orchestration
 │
 ├── datasets/
-│   └── screening_dataset/
+│   ├── screening_dataset/        # General screening dataset (person, bags, etc.)
+│   │   ├── images/train/
+│   │   ├── images/val/
+│   │   ├── labels/train/
+│   │   └── labels/val/
+│   └── weapon_dataset/           # Knife + gun dataset (not in Git, ~16k images)
 │       ├── images/train/
 │       ├── images/val/
 │       ├── labels/train/
@@ -767,7 +772,13 @@ Adjust this file before training if the class list changes.
 
 ## 10. Training the custom YOLO model
 
-Training is the next major step.
+### Weapon detector — completed ✓
+
+A knife + gun detector has been trained (YOLO11s, 40 epochs, mAP50 = 0.958). See the top of this README for details and run commands.
+
+### Screening detector — in progress
+
+The general screening detector (`yolo11n.pt` base) still uses pretrained COCO weights for person/bag detection. Custom training on project-specific classes is the next step.
 
 Right now, `yolo11n.pt` is a general pretrained model. It is not trained for our exact project environment, camera angle, or custom object classes.
 
@@ -1158,19 +1169,11 @@ bottle
 
 Keep labels simple for the first version.
 
-### Task C — Train first custom YOLO model
+### Task C — Train weapon detector ✓ completed
 
-Train with:
+Knife + gun detector trained (YOLO11s, 40 epochs, mAP50 = 0.958). See section 10 and top of README.
 
-```bat
-python scripts\train_yolo.py --data configs\data.yaml --base yolo11n.pt --epochs 80 --imgsz 640 --batch 8
-```
-
-Then run with:
-
-```bat
---weights runs\screening\yolo_screening_detector\weights\best.pt
-```
+Next: train a screening detector on person/bag classes using `configs/data.yaml`.
 
 ### Task D — Add offline track stitching
 
@@ -1335,8 +1338,11 @@ python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --s
 Current pipeline:
 YOLO -> BoT-SORT -> Deep ReID -> MemoryBank -> FastSAM for bags -> Person-bag relationship -> Video/JSON/CSV
 
+Weapon detector:
+Knife + gun, mAP50 = 0.958, weights: runs/detect/runs/screening/yolo_screening_detector-5/weights/best.pt
+
 Next major task:
-Build dataset -> label -> train YOLO -> run with best.pt -> tune tracking/events.
+Integrate weapon detector into main pipeline -> tune thresholds -> demo.
 ```
 
 
