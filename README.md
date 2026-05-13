@@ -1,416 +1,369 @@
-# Screening AI Project — OSNet Gallery ReID Upgrade
+# Screening AI Project — YOLO + FastSAM + OSNet ReID Tracking
 
-## Latest changes in this ZIP
+This repository is a Python prototype for detecting people and visible carried objects, tracking anonymous IDs over time, segmenting baggage, linking bags to likely owners, and exporting annotated video, JSON events, and CSV track logs.
 
-This version improves the person memory layer that sits above YOLO/BoT-SORT:
+## Current pipeline
 
-1. **Strict OSNet person ReID**
-   - `configs/tracking_memory.yaml` now requests `person_reid.backend: torchreid` with `model_name: osnet_x0_25`.
-   - The generic Torchvision fallback is disabled by default, so the app will not silently claim to use OSNet when Torchreid is missing.
-   - Install it with:
+Video / webcam
+  -> YOLO detection
+  -> BoT-SORT short-term tracking
+  -> relevant-class whitelist and clutter filtering
+  -> Nested ROI Search inside selected person/bag boxes
+  -> duplicate cleanup
+  -> OSNet person ReID + MemoryBank global IDs
+  -> FastSAM/SAM masks for selected baggage/object classes
+  -> person-bag relationship memory
+  -> risk/event logic
+  -> annotated MP4 + events JSON + tracks CSV
 
-```bat
-pip install -r requirements.txt
-pip install -r requirements_reid_optional.txt
-python scripts\check_reid_backend.py
-```
+**Main idea:**
 
-2. **Bad-crop guard**
-   - Person appearance memory is not updated from side-clipped, top-clipped, tiny, or weird-aspect crops.
-   - This prevents the gallery from being poisoned when the person is leaving the frame or only partly visible.
-   - The CSV now records `crop_quality`, `crop_quality_reason`, `last_observed_side`, `exit_side`, and `entry_side`.
+  YOLO finds visible objects.
+  BoT-SORT tracks them locally for short time spans.
+  OSNet ReID helps reconnect people after track loss.
+  MemoryBank assigns stable project-level IDs like G1, G2, G3.
+  FastSAM segments selected objects, mainly bags and weapons.
+  Relationship memory links bags to likely nearby people.
+  Risk logic writes possible unattended-bag and tracking events.
 
-3. **Multiple good snapshots per person**
-   - Each person track stores a small OSNet snapshot gallery instead of constantly averaging every crop into one embedding.
-   - Matching compares against the best snapshot in the gallery, which handles pose/view changes better.
+## Current status
 
-4. **Entry/exit side logic**
-   - If a person exits on the right and later re-enters on the right, the score receives a small continuity bonus.
-   - OSNet similarity is still required, so this is a boost, not an automatic merge.
+**Implemented:**
 
-5. **Higher default YOLO image size**
-   - `run_video.py` and `run_webcam.py` now default to `--imgsz 640` for better person crops.
-   - Lower to `--imgsz 320` only if your CPU is too slow.
-
-6. **Offline merge pass**
-   - After video processing, the pipeline compares completed person tracks and rewrites likely split IDs in `tracks.csv` and `events.json`.
-   - Example: if `G1`, `G2`, `G5`, and `G6` are probably the same person, the CSV will keep `raw_global_id` but rewrite `global_id` to the canonical ID.
-   - Offline merge events are added as `offline_track_merge` in the JSON report.
-
-Recommended webcam run:
-
-```bat
-python scripts
-un_webcam.py --weights yolo11n.pt --disable-sam --imgsz 640 --device cpu --display
-```
-
-Recommended video run:
-
-```bat
-python scripts
-un_video.py --source input	est_video.mp4 --weights yolo11n.pt --disable-sam --imgsz 640 --device cpu --output-video outputsnnotated_video.mp4 --output-json outputs\events.json --output-tracks outputs	racks.csv
-```
-
----
-
-# Screening AI Prototype — YOLO + FastSAM + Deep ReID Tracking
-
-This repository is a Python prototype for a smart visual screening pipeline.
-It detects people and carried objects, tracks anonymous people across time, segments selected object classes, and records video/CSV/JSON outputs for debugging and project analysis.
-
-The current recommended baseline is:
-
-```bat
-python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --display
-```
-
-This baseline means:
-
-```text
-YOLO detects people/bags/objects every frame.
-BoT-SORT gives short-term local track IDs.
-Deep anonymous ReID helps reconnect people after ID loss.
-FastSAM segments only bags/handbags/suitcases every 20 frames.
-The MemoryBank assigns stable project-level global IDs.
-Relationship memory links people to carried bags over time.
-The system saves annotated video, events JSON, and tracks CSV.
-```
-
-Important: this project does **not** perform facial recognition and does **not** identify real people by name. People are tracked only as anonymous IDs such as `G1`, `G2`, etc.
-
----
-
-## 1. Current project status
-
-Implemented:
-
-```text
 [OK] Webcam/live-camera processing
 [OK] Prerecorded video processing
 [OK] YOLO object detection
-[OK] BoT-SORT short-term tracking
-[OK] Project-level global ID memory: G1, G2, G3...
-[OK] Deep anonymous person ReID embeddings
-[OK] Group-safe ID assignment
-[OK] FastSAM segmentation for selected object classes
+[OK] BoT-SORT local tracking
+[OK] Project global IDs: G1, G2, G3...
+[OK] Torchreid/OSNet person ReID backend
+[OK] Bad-crop guard for person ReID memory
+[OK] Multiple good ReID snapshots per person
+[OK] Entry/exit side continuity boost
+[OK] Group-safe ID assignment so visible people do not collapse into one ID
+[OK] Relevant-class whitelist
+[OK] Nested ROI Search for visible objects inside person/bag boxes
+[OK] FastSAM/SAM segmentation for selected object classes
 [OK] Person-bag relationship memory
+[OK] Owner-link display TTL to prevent stale lines staying on screen
 [OK] Possible unattended-bag event logic
 [OK] Annotated MP4 recording
 [OK] Events JSON output
 [OK] Per-frame tracks CSV output
-[OK] Optional privacy face blur / pause recording on face detection
-```
+[OK] Manual offline CSV/JSON merge helper
 
-Not fully solved yet:
 
-```text
-[TODO] Train custom YOLO model on our project-specific classes
-[TODO] Improve dataset quality and annotation consistency
-[TODO] Add offline track stitching for prerecorded videos
-[TODO] Tune abandoned-bag event thresholds using real tests
-[TODO] Add dashboard/report view
-[TODO] Add true multi-sensor fusion later if hardware/data exists
-```
+**Still in progress:**
 
-Limitations:
+[TODO] Integrate any trained weapon/suspicious-object detector cleanly into the main pipeline
+[TODO] Tune thresholds on real team videos
+[TODO] Improve event reports and dashboard/report view
 
-```text
-- RGB video cannot detect hidden objects inside closed bags or under clothing.
-- CPU-only real-time performance is limited.
-- FastSAM is used sparingly because segmentation is slower than detection.
-- Deep ReID improves identity continuity but is still not perfect in crowds.
-- The system estimates ownership; it cannot prove ownership.
-```
+## 4. Repository structure
 
----
+Expected layout:
 
-## 2. Repository structure
 
-```text
 screening_ai_project_deep_reid/
-│
-├── configs/
-│   ├── data.yaml                 # YOLO training dataset config
-│   ├── classes.yaml              # Class groups: people, bags, suspicious objects, etc.
-│   ├── botsort_reid.yaml         # BoT-SORT tracker settings
-│   ├── risk_config.yaml          # Event/risk thresholds
-│   └── tracking_memory.yaml      # Global memory + ReID + relationship settings
-│
-├── scripts/
-│   ├── run_webcam.py             # Run live camera/webcam mode
-│   ├── run_video.py              # Run prerecorded video mode
-│   ├── train_yolo.py             # Train custom YOLO detector
-│   ├── create_dataset_folders.py # Create dataset folder layout
-│   ├── check_reid_backend.py     # Check active ReID backend
-│   ├── run_realtime_sam_cpu.py   # CPU-friendly demo launcher
-│   └── smoke_test.py             # Quick functional test
-│
-├── src/screening_ai/
-│   ├── detector.py               # YOLO detector/tracker wrapper
-│   ├── segmenter.py              # SAM/FastSAM wrapper
-│   ├── deep_reid.py              # Deep person ReID backend
-│   ├── appearance.py             # Appearance descriptors/fallbacks
-│   ├── memory.py                 # Global ID MemoryBank
-│   ├── association.py            # Person-bag relationship logic
-│   ├── risk.py                   # Event/risk decision logic
-│   ├── visualization.py          # Drawing boxes, trails, labels, links
-│   ├── privacy.py                # Optional face blur/pause recording
-│   └── pipeline.py               # Main pipeline orchestration
-│
-├── datasets/
-│   ├── screening_dataset/        # General screening dataset (person, bags, etc.)
-│   │   ├── images/train/
-│   │   ├── images/val/
-│   │   ├── labels/train/
-│   │   └── labels/val/
-│   └── weapon_dataset/           # Knife + gun dataset (not in Git, ~16k images)
-│       ├── images/train/
-│       ├── images/val/
-│       ├── labels/train/
-│       └── labels/val/
-│
-├── input/                        # Put input videos here
-├── outputs/                      # Annotated video, JSON, CSV outputs
-├── requirements.txt
-├── requirements_reid_optional.txt
-└── README.md
-```
+|
+|-- configs/
+|   |-- data.yaml                 # YOLO training dataset config
+|   |-- weapon_data.yaml          # Optional detector dataset config, if present
+|   |-- classes.yaml              # Class groups: people, bags, suspicious objects
+|   |-- botsort_reid.yaml         # BoT-SORT tracker settings
+|   |-- risk_config.yaml          # Event/risk thresholds
+|   |-- tracking_memory.yaml      # Global memory, ReID, filters, ROI search
+|
+|-- scripts/
+|   |-- run_webcam.py             # Run live camera/webcam mode
+|   |-- run_video.py              # Run prerecorded video mode
+|   |-- run_realtime_sam_cpu.py   # CPU-friendly fixed demo launcher
+|   |-- train_yolo.py             # Train custom YOLO detector
+|   |-- create_dataset_folders.py # Create dataset/input/output folders
+|   |-- check_reid_backend.py     # Verify OSNet/Torchreid backend
+|   |-- smoke_test.py             # Quick functional test
+|   |-- offline_merge_tracks.py   # Manual post-run ID merge helper
+|   |-- import_zip_dataset.py     # Optional dataset import helper
+|   |-- download_weapon_dataset.py # Optional dataset download helper, if used
+|
+|-- src/screening_ai/
+|   |-- detector.py
+|   |-- segmenter.py
+|   |-- deep_reid.py
+|   |-- appearance.py
+|   |-- memory.py
+|   |-- association.py
+|   |-- risk.py
+|   |-- visualization.py
+|   |-- privacy.py                # Legacy/optional privacy utilities, if still present
+|   |-- pipeline.py
+|   |-- utils.py
+|
+|-- datasets/
+|   |-- screening_dataset/
+|   |   |-- images/train/
+|   |   |-- images/val/
+|   |   |-- labels/train/
+|   |   |-- labels/val/
+|
+|-- input/                        # Put input videos here
+|-- outputs/                      # Annotated video, JSON, CSV outputs
+|-- requirements.txt
+|-- requirements_reid_optional.txt
+|-- requirements_windows_stable_reid.txt
+|-- README.md
 
----
 
-## 3. Setup instructions
+Always run commands from the project root, the folder that contains `scripts`, `src`, `configs`, and `README.md`.
 
-### 3.1 Windows Command Prompt setup
+### 5.1 Recommended Windows setup with real OSNet ReID
 
-From the project folder:
+**note:** python3.12 is crucial.
 
-```bat
-python -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-Optional stronger ReID backend:
-
-```bat
-python -m pip install -r requirements_reid_optional.txt
-```
-
-If the optional ReID install fails, the project still runs using the built-in Torchvision fallback.
-
-### 3.2 Download SAM weights (required for segmentation)
-
-SAM weights are not included in the repository. Download FastSAM-s (recommended, lightweight):
-
-**macOS / Linux:**
-```bash
-curl -L https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v1.0/FastSAM-s.pt -o FastSAM-s.pt
-```
-
-**Windows:**
-```bat
-curl -L https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v1.0/FastSAM-s.pt -o FastSAM-s.pt
-```
-
-Place the file in the project root folder (next to `requirements.txt`).
-
-If you prefer to skip segmentation, pass `--disable-sam` to any run command.
-
-### 3.3 Windows PowerShell setup
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-If PowerShell blocks activation, use Command Prompt instead, or allow local scripts for the current user:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### 3.3 Verify that the virtual environment is active
-
-```bat
-where python
-where pip
-```
-
-The first result should point to:
-
-```text
-...\screening_ai_project_deep_reid\.venv\Scripts\python.exe
-```
-
----
-
-## 4. Quick tests
-
-### 4.1 Smoke test
-
-```bat
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements_windows_stable_reid.txt
+python scripts\check_reid_backend.py
 python scripts\smoke_test.py
-```
+
+
+Expected successful ReID check:
+
+
+Checking Torchreid/OSNet backend...
+Using Torchreid/OSNet backend: osnet_x0_25 on cpu
+OSNet is available.
+
+
+### 5.2 Check Python versions
+
+py -0p
+
+Recommended:
+
+Python 3.12 64-bit
+
+Avoid Python 3.14 for this project right now. The base packages may install, but Torchreid/OSNet is more reliable on Python 3.10-3.12.
+
+### 5.3 Basic setup without guaranteed OSNet
+
+This can work for general YOLO/SAM experiments, but it is not the safest path for real OSNet:
+
+py -3.12 -m venv .venv
+.venv\Scripts\activate.bat
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+python -m pip install -r requirements_reid_optional.txt
+python scripts\check_reid_backend.py
+
+Use the stable file if OSNet says unavailable.
+
+## 6. First validation checks
+
+### 6.1 Create folders
+
+python scripts\create_dataset_folders.py
+
+This creates the dataset, input, and output folders.
+
+### 6.2 Confirm OSNet
+
+python scripts\check_reid_backend.py
+
+Do not continue debugging person tracking quality until this says:
+
+OSNet is available.
+
+Normal first run:
+
+Downloading...
+From: https://drive.google.com/...
+To: C:\Users\...\.cache\torch\checkpoints\osnet_x0_25_imagenet.pth
+
+This is expected. Torchreid downloads OSNet weights the first time.
+
+Harmless warnings:
+
+UserWarning: Cython evaluation ... is unavailable
+FutureWarning: You are using torch.load with weights_only=False
+
+If the final line says OSNet is available, continue.
+
+### 6.3 Smoke test
+
+python scripts\smoke_test.py
 
 Expected:
 
-```text
 Smoke tests passed: association, reconnect, SAM mask geometry, and group-safe ReID work.
-```
 
-### 4.2 Check ReID backend
+`smoke_test.py` checks project logic. It does not prove OSNet is active. Use `check_reid_backend.py` for that.
 
-```bat
-python scripts\check_reid_backend.py
-```
+---
 
-Possible outputs:
+## 7. Recommended run commands
 
-```text
-[ReID] Using Torchreid/OSNet backend: osnet_x0_25 on cpu
-```
+### 7.1  Recommended live demo command
+
+Use this for the current full webcam demo:
+
+
+python scripts\run_webcam.py --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 320 --device cpu --display
+
+
+This command is tuned for CPU and webcam testing. It keeps bag detections more easily while relying on class-specific filters to reduce bad person detections.
+
+### 7.3 If bags still flicker too much
+
+Lower global YOLO confidence slightly:
+
+python scripts\run_webcam.py --weights yolo11n.pt --conf 0.22 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 320 --device cpu --display
+
+If this creates fake people, raise the person-specific confidence in `configs/tracking_memory.yaml`:
+
+min_conf_by_class:
+  person: 0.60
 
 or:
 
-```text
-[ReID] Using Torchvision MobileNetV3 deep embedding fallback on cpu
-```
+min_conf_by_class:
+  person: 0.65
 
-or, if deep backends are unavailable:
-
-```text
-[ReID] Falling back to HSV appearance descriptors
-```
-
-Best situation:
-
-```text
-Torchreid/OSNet backend is active.
-```
-
-Acceptable situation:
-
-```text
-Torchvision MobileNetV3 backend is active.
-```
-
-Weakest fallback:
-
-```text
-HSV only.
-```
-
----
-
-## 5. Main run commands
-
-### 5.1 Current recommended webcam baseline
-
-Use this first:
+### 7.4 Faster webcam command if CPU is too slow
 
 ```bat
-python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --display
+python scripts\run_webcam.py --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 30 --sam-max-objects 1 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 320 --device cpu --display --roi-every-n 20 --roi-max-parent-rois 1
 ```
 
-Outputs:
+If your current branch does not include `--roi-every-n` or `--roi-max-parent-rois`, tune the same values inside `configs/tracking_memory.yaml` instead.
 
-```text
-outputs\webcam_annotated.mp4
-outputs\webcam_events.json
-outputs\webcam_tracks.csv
-```
-
-Press `q` in the preview window to stop.
-
-### 5.2 Webcam without SAM
-
-Useful when debugging tracking only:
+### 7.5 Higher-quality but slower webcam command
 
 ```bat
-python scripts\run_webcam.py --weights yolo11n.pt --disable-sam --imgsz 640 --device cpu --display
+python scripts\run_webcam.py --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --sam-tracking-classes backpack,handbag,suitcase --imgsz 640 --device cpu --display
 ```
 
-This often gives better raw person tracking because YOLO gets a larger input size and the CPU is not busy with segmentation.
+Use this when you want better boxes/crops and the computer can handle it.
 
-### 5.3 CPU-friendly quick webcam test
-
-```bat
-python scripts\run_webcam.py --weights yolo11n.pt --disable-sam --imgsz 640 --device cpu --display --no-save-video --max-frames 100
-```
-
-### 5.4 Prerecorded video baseline
+### 7.6 Prerecorded video command
 
 Put a video here:
 
-```text
 input\test_video.mp4
-```
 
 Run:
 
-```bat
-python scripts\run_video.py --source input\test_video.mp4 --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --output-video outputs\test_annotated.mp4 --output-json outputs\test_events.json --output-tracks outputs\test_tracks.csv
-```
+python scripts\run_video.py --source input\test_video.mp4 --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 320 --device cpu --output-video outputs\test_annotated.mp4 --output-json outputs\test_events.json --output-tracks outputs\test_tracks.csv
 
-### 5.5 Prerecorded video without SAM
+For faster debugging without SAM:
 
-```bat
 python scripts\run_video.py --source input\test_video.mp4 --weights yolo11n.pt --disable-sam --imgsz 640 --device cpu --output-video outputs\test_no_sam_annotated.mp4 --output-json outputs\test_no_sam_events.json --output-tracks outputs\test_no_sam_tracks.csv
-```
 
-### 5.6 Use a full video path directly
+### 7.7 Use a full video path directly
 
-```bat
-python scripts\run_video.py --source "C:\Users\Misha\Desktop\my_video.mp4" --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --output-video outputs\my_video_annotated.mp4 --output-json outputs\my_video_events.json --output-tracks outputs\my_video_tracks.csv
-```
+python scripts\run_video.py --source "C:\Users\Misha\Desktop\my_video.mp4" --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 320 --device cpu --output-video outputs\my_video_annotated.mp4 --output-json outputs\my_video_events.json --output-tracks outputs\my_video_tracks.csv
 
----
+## 8. Important command flags
 
-## 6. Useful command flags
+### Input/output flags
 
-```text
---weights yolo11n.pt
-    YOLO model weights. Use yolo11n.pt before custom training.
+--source
+    Webcam camera index, video path, RTSP URL, etc.
+    Webcam default: 0
+    Video default: input/test_video.mp4
 
---weights runs\screening\yolo_screening_detector\weights\best.pt
-    Use this only after training creates best.pt.
+--weights
+    YOLO model weights.
+    Use yolo11n.pt before custom training.
+    Use runs\screening\yolo_screening_detector\weights\best.pt after training.
 
---disable-sam
-    Turn off SAM/FastSAM segmentation.
+--tracker
+    BoT-SORT tracker config path.
+    Default: configs/botsort_reid.yaml
 
---sam-weights FastSAM-s.pt
-    Use FastSAM small model for faster segmentation.
+--classes
+    Class grouping config path.
+    Default: configs/classes.yaml
 
---sam-every-n 20
-    Run SAM once every 20 frames.
+--risk
+    Risk/event threshold config path.
+    Default: configs/risk_config.yaml
 
---sam-max-objects 2
-    Segment only the top 2 selected objects per SAM pass.
+--memory
+    Project MemoryBank/ReID config path.
+    Default: configs/tracking_memory.yaml
 
---sam-classes backpack,handbag,suitcase
-    Only send these classes to SAM.
+--output-video
+    Output annotated MP4 path.
 
---prefer-sam-masks
-    Use SAM mask geometry for selected object classes.
-    Person tracking still stays YOLO/ReID-based unless configured otherwise.
+--output-json
+    Output event JSON path.
 
---imgsz 640
-    Faster, lower accuracy. Good for CPU webcam.
+--output-tracks
+    Output per-frame tracks CSV path.
 
---imgsz 640
-    Slower, better detection. Good for offline video or no-SAM tests.
+### Detection/performance flags
+
+--conf
+    YOLO global confidence threshold.
+    Lower values keep weak bag detections but can create more false positives.
+    Recommended live tuning: 0.25 or 0.22.
+
+--imgsz
+    YOLO image size.
+    320 = faster, less detail.
+    480 = good webcam compromise.
+    640 = better boxes/crops, slower on CPU.
 
 --device cpu
-    Force CPU mode.
+    Force CPU.
 
 --device 0
-    Use GPU 0 if CUDA is available.
+    Use CUDA GPU 0 if available.
+
+--max-frames
+    Stop after N frames. Useful for quick tests.
+
+### SAM/FastSAM flags
+
+--sam-weights
+    SAM/FastSAM weights path.
+    For CPU demos, pass FastSAM-s.pt explicitly.
+
+--sam-every-n
+    Run SAM once every N frames.
+    Smaller = smoother masks but slower.
+    Larger = faster but masks update less often.
+
+--sam-max-objects
+    Maximum detections to segment per SAM pass.
+    Use 1 or 2 on CPU.
+
+--sam-classes
+    Comma-separated class names that SAM may segment.
+    Example: backpack,handbag,suitcase
+
+--prefer-sam-masks
+    Use SAM mask geometry/appearance for configured object classes.
+    Good for bags if YOLO boxes are rough.
+
+--sam-tracking-classes
+    Classes whose SAM masks may affect tracking geometry/appearance.
+    Recommended: backpack,handbag,suitcase
+
+--no-reuse-masks
+    Do not reuse old SAM masks between SAM passes.
+    Use if masks look stale or wrong.
+
+--disable-sam
+    Turn off SAM completely.
+    Use for ReID/debug/FPS tests.
+    Do not use if you expect masks/cropping.
+
+### Visualization flags
 
 --display
-    Show preview window.
+    Show preview window. Press q to stop.
 
 --no-save-video
     Do not write annotated MP4.
@@ -418,187 +371,171 @@ python scripts\run_video.py --source "C:\Users\Misha\Desktop\my_video.mp4" --wei
 --no-save-tracks
     Do not write tracks CSV.
 
---max-frames 100
-    Stop after 100 frames.
+--no-trails
+    Do not draw movement trails.
 
---blur-faces
-    Blur face-like regions for privacy. This is detection/blurring, not recognition.
+--no-owner-links
+    Do not draw person-bag owner links.
+    Do not use this if the demo goal is to show bag-person connections.
 
---pause-recording-on-face
-    Do not write video frames when a face-like region is visible.
-```
+Some branches may still include legacy privacy flags such as `--blur-faces` and `--pause-recording-on-face`. These are face detection/blurring utilities, not face recognition, and they are will not be in the final solution.
 
 ---
 
-## 7. Pipeline explanation
+## 9. Main features explained
 
-### 7.1 High-level pipeline
+### 9.1 Relevant-class whitelist
 
-```text
-Input video / webcam
-    ↓
-YOLO detection
-    ↓
-BoT-SORT local tracking
-    ↓
-Deep anonymous person ReID
-    ↓
-Project MemoryBank assigns global IDs
-    ↓
-FastSAM segmentation for selected object classes
-    ↓
-Person-bag relationship memory
-    ↓
-Risk/event logic
-    ↓
-Annotated MP4 + events JSON + tracks CSV
+Instead of blocking wrong classes one by one, the pipeline keeps only project-relevant classes.
+
+Example config in `configs/tracking_memory.yaml`:
+
+target_classes:
+  - person
+  - backpack
+  - handbag
+  - suitcase
+  - trolley_bag
+  - cell phone
+  - phone
+  - laptop
+  - bottle
+  - suspicious_object
+  - dangerous_object
+  - knife
+  - gun
+  - weapon
+
+### 9.2 Nested ROI Search for overlapping boxes
+
+Large boxes can hide smaller objects. For example:
+
+- a backpack overlaps a person box,
+- a phone or laptop is inside a person box,
+- a visible object is attached to or on top of a bag,
+- full-frame YOLO misses it because it is small or visually dominated by the parent object.
+
+Nested ROI Search fixes this by running a second YOLO pass inside selected parent boxes.
+
+Pipeline section:
+
+full-frame YOLO + tracking
+  -> choose selected parent boxes
+  -> crop person/bag ROI with padding
+  -> run YOLO predict() inside ROI
+  -> map detections back to full-frame coordinates
+  -> remove duplicates
+  -> continue with SAM/ReID/memory/event logic
+
+Important: ROI search uses YOLO `predict()`, not `track()`, so it should not corrupt the main BoT-SORT tracker state.
+
+Typical config:
+
+```yaml
+roi_inner_search:
+  enabled: true
+  every_n_frames: 10
+  parent_classes: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]
+  max_parent_rois_per_frame: 2
+  max_inner_detections_per_roi: 5
+  min_parent_confidence: 0.25
+  roi_confidence: 0.18
+  roi_imgsz: 320
+  padding_ratio: 0.12
 ```
 
-### 7.2 YOLO detection
+Exclusion rules:
 
-YOLO detects visible objects in each frame.
+Inside a person box:
+  do not search for another person.
 
-Current pretrained `yolo11n.pt` can already detect common COCO classes such as:
+Inside a backpack/handbag/suitcase/trolley_bag:
+  do not search for person or other bag classes.
 
-```text
-person
+Useful inner classes:
+  phone, cell phone, laptop, bottle,
+  suspicious_object, dangerous_object, knife, gun, weapon.
+
+### 9.3 OSNet Gallery ReID
+
+YOLO/BoT-SORT local IDs are useful but fragile. They can change when a person leaves the frame, becomes occluded, or is missed for several frames.
+
+The project adds a MemoryBank layer:
+
+BoT-SORT local ID: L4
+Project global ID: G2
+Displayed label: person G2 L4
+
+For people, OSNet extracts an embedding from person crops:
+
+person crop -> OSNet -> embedding vector -> compare to MemoryBank
+
+Current ReID improvements:
+
+- strict Torchreid/OSNet backend,
+- bad-crop guard,
+- multiple good snapshots per person,
+- best-snapshot matching instead of simple averaging,
+- entry/exit side continuity boost,
+- group-safe assignment so visible people do not collapse into one ID,
+- offline merge helper for post-run cleanup.
+
+Bad-crop guard avoids updating memory from:
+
+- side-clipped people,
+- top-clipped people,
+- tiny boxes,
+- strange aspect ratios,
+- partial bodies at frame edges.
+
+This protects long-term memory but can make close webcam demos stricter. Stand farther from the camera so the full body is visible.
+
+### 9.4 FastSAM/SAM segmentation
+
+SAM/FastSAM is mainly used for selected object masks, especially:
+
 backpack
 handbag
 suitcase
-bottle
-laptop
-cell phone
-```
+trolley_bag
+weapons
 
-For the final project, we need to train YOLO on our own project-specific classes.
+It is not the main person identity mechanism. Person identity is handled by YOLO boxes + BoT-SORT + OSNet ReID.
 
-### 7.3 BoT-SORT short-term tracking
+### 9.5 Person-bag relationship memory
 
-BoT-SORT gives local tracker IDs:
+Bag ownership is estimated using visual relationship history.
 
-```text
-person L4
-backpack L8
-```
+A bag/object track stores fields such as:
 
-These local IDs are useful but not fully reliable. They can change when a person leaves the frame, gets occluded, overlaps another person/object, or is missed by YOLO for a few frames.
-
-### 7.4 Project-level global IDs
-
-The MemoryBank maps local IDs to stable global IDs:
-
-```text
-YOLO/BoT-SORT local ID: L4
-Project global ID:       G2
-```
-
-Displayed label example:
-
-```text
-person G2 L4
-```
-
-Meaning:
-
-```text
-BoT-SORT currently calls this local track L4.
-Our project memory believes it belongs to anonymous person G2.
-```
-
-### 7.5 Deep anonymous person ReID
-
-For person crops, the system extracts a deep embedding vector:
-
-```text
-person crop -> ReID model -> embedding vector
-```
-
-A memory entry stores:
-
-```text
-G2:
-  class_name = person
-  appearance_embedding = [0.13, -0.22, ...]
-  last_bbox
-  last_seen_frame
-  local_ids_seen = [L4, L12]
-  movement history
-```
-
-When a new local person track appears, the system compares its embedding to old global IDs.
-
-Reconnect is allowed only if:
-
-```text
-1. class matches: person -> person
-2. old global ID is not already visible this frame
-3. appearance match is strong enough
-4. position/motion is plausible
-```
-
-This is group-safe: two visible people should not become the same global ID.
-
-### 7.6 FastSAM segmentation
-
-FastSAM is currently used for:
-
-```text
-backpack
-handbag
-suitcase
-```
-
-Not for person identity.
-
-Why:
-
-```text
-- Person tracking worked better when based on YOLO + ReID.
-- SAM/FastSAM is useful for object masks.
-- SAM is slower, especially on CPU.
-```
-
-### 7.7 Person-bag relationship memory
-
-Bag ownership is not solved by person ReID.
-
-Instead, every bag/object track stores relationship information:
-
-```text
 owner_scores
 owner_contact_frames
 owner_separation_frames
 owner_last_near_frame
 owner_link_strength
 owner_last_distance_px
-```
 
 Example logic:
 
-```text
-bag G4 was near/overlapping person G2 for several seconds
+bag G4 was near or overlapping person G2 for several seconds
 bag G4 later became stationary
 person G2 moved away
 => possible unattended bag event
-```
 
-This is an estimate, not proof.
+This is an estimate.
 
----
+## 10. Output files
 
-## 8. Output files
+### 10.1 Annotated video
 
-### 8.1 Annotated video
+Examples:
 
-Example:
-
-```text
 outputs\webcam_annotated.mp4
-```
+outputs\test_annotated.mp4
+outputs\annotated_video.mp4
 
 Shows:
 
-```text
 bounding boxes
 G global IDs
 L local tracker IDs
@@ -606,38 +543,37 @@ confidence values
 movement trails
 person-bag owner links
 SAM masks for selected objects
-important event messages
-```
+event messages
 
-### 8.2 Events JSON
+### 10.2 Events JSON
 
-Example:
+Examples:
 
-```text
 outputs\webcam_events.json
-```
+outputs\test_events.json
+outputs\events.json
 
-Contains events like:
+Contains events such as:
 
-```text
 track_reidentified
 possible_unattended_bag
-object/person relationship events
-```
+offline_track_merge
+relationship/risk events
 
-### 8.3 Tracks CSV
+### 10.3 Tracks CSV
 
-Example:
+Examples:
 
-```text
 outputs\webcam_tracks.csv
-```
+outputs\test_tracks.csv
+outputs\tracks.csv
 
 Useful columns:
 
-```text
 frame
 global_id
+raw_global_id
+offline_merged_into
 local_tracker_id
 class_name
 confidence
@@ -650,83 +586,92 @@ owner_separation_frames
 owner_last_distance_px
 mask_area
 used_mask_geometry
+crop_quality
+crop_quality_reason
+last_observed_side
+exit_side
+entry_side
+snapshot_count
 reidentified_count
-```
+detection_source
+parent_class_name
+roi_level
 
-Use the CSV to debug:
+ROI-related examples:
 
-```text
-Did person G5 become G12?
-Did the bag stay linked to the same owner?
-How long was the bag stationary?
-When did the tracker lose/reconnect a person?
-```
+detection_source = main          # normal full-frame YOLO/BoT-SORT detection
+detection_source = roi:person    # object found inside a person ROI
+detection_source = roi:backpack  # object found inside a backpack ROI
 
 ---
 
-## 9. Configuration files
+## 11. Configuration files
 
-### 9.1 `configs/botsort_reid.yaml`
+### 11.1 `configs/botsort_reid.yaml`
 
 Controls BoT-SORT short-term tracking.
 
 Useful parameters:
 
-```yaml
 track_buffer: 180
 match_thresh: 0.72
 track_high_thresh: 0.25
 new_track_thresh: 0.32
 with_reid: true
-```
 
 If the tracker loses people too quickly:
 
-```text
 increase track_buffer
 slightly lower match_thresh
-```
 
 If the tracker merges different people:
 
-```text
 increase match_thresh
-increase appearance thresholds
-make MemoryBank thresholds stricter
-```
+increase appearance/ReID thresholds
 
-### 9.2 `configs/tracking_memory.yaml`
+### 11.2 `configs/tracking_memory.yaml`
 
-Controls project-level global memory and ReID.
+Controls project-level global memory, ReID, filters, class whitelist, SAM tracking classes, ROI search, and offline merge.
 
 Important sections:
 
-```yaml
+target_classes:
+  # whitelist of allowed classes
+
+min_conf_by_class:
+  # per-class confidence thresholds
+
+min_area_ratio_by_class:
+  # per-class minimum bbox area
+
+max_area_ratio_by_class:
+  # per-class maximum bbox area
+
+sam_tracking_classes:
+  # classes whose SAM masks may affect tracking/memory geometry
+
 person_reid:
   enabled: true
-  backend: auto
+  backend: torchreid
   model_name: osnet_x0_25
+  allow_torchvision_fallback: false
+  require_backend: true
 
 group_safe_assignment:
   enabled: true
 
-person_memory:
-  # thresholds for reconnecting old person IDs
+roi_inner_search:
+  enabled: true
 
-object_memory:
-  # thresholds for bags/objects
+offline_merge:
+  enabled: true
 
-ignored_zones_norm:
-  # optional background zones to ignore
-```
-
-### 9.3 `configs/classes.yaml`
+### 11.3 `configs/classes.yaml`
 
 Controls class groups.
 
-Example groups:
+Example:
 
-```yaml
 person_classes:
   - person
 
@@ -739,15 +684,31 @@ bag_classes:
 suspicious_classes:
   - suspicious_object
   - dangerous_object
-```
 
-### 9.4 `configs/data.yaml`
+### 11.4 `configs/risk_config.yaml`
+
+Controls risk and event thresholds, especially person-bag ownership and unattended-bag logic.
+
+For live demos, relationship thresholds may need to be more forgiving than final evaluation thresholds.
+
+Example demo-style association tuning:
+
+association:
+  max_owner_distance_px: 260.0
+  min_owner_score: 0.25
+  motion_window_frames: 12
+  score_decay: 0.98
+  score_gain: 0.22
+  min_contact_frames: 8
+  contact_distance_px: 240.0
+  separation_distance_px: 320.0
+
+### 11.5 `configs/data.yaml`
 
 YOLO training dataset config.
 
 Example:
 
-```yaml
 path: datasets/screening_dataset
 
 train: images/train
@@ -764,593 +725,144 @@ names:
   7: phone
   8: laptop
   9: bottle
-```
 
-Adjust this file before training if the class list changes.
-
----
-
-## 10. Training the custom YOLO model
-
-### Weapon detector — completed ✓
-
-A knife + gun detector has been trained (YOLO11s, 40 epochs, mAP50 = 0.958). See the top of this README for details and run commands.
-
-### Screening detector — in progress
-
-The general screening detector (`yolo11n.pt` base) still uses pretrained COCO weights for person/bag detection. Custom training on project-specific classes is the next step.
-
-Right now, `yolo11n.pt` is a general pretrained model. It is not trained for our exact project environment, camera angle, or custom object classes.
-
-### 10.1 Recommended training workflow
-
-```text
-Step 1: Collect safe project videos/images
-Step 2: Extract useful frames
-Step 3: Label frames in YOLO format
-Step 4: Split data into train/val
-Step 5: Update configs/data.yaml
-Step 6: Train YOLO
-Step 7: Validate results
-Step 8: Run the pipeline with best.pt
-Step 9: Tune tracking/memory thresholds
-Step 10: Add SAM for trained object classes
-```
-
-### 10.2 Dataset folder layout
-
-```text
-datasets/screening_dataset/
-├── images/
-│   ├── train/
-│   └── val/
-└── labels/
-    ├── train/
-    └── val/
-```
-
-Each image needs a matching `.txt` label file.
-
-Example:
-
-```text
-images/train/frame_000123.jpg
-labels/train/frame_000123.txt
-```
-
-### 10.3 YOLO label format
-
-Each label row:
-
-```text
-class_id center_x center_y width height
-```
-
-All coordinates are normalized to 0-1.
-
-Example:
-
-```text
-0 0.512 0.438 0.231 0.604
-```
-
-Meaning:
-
-```text
-class 0, centered at x=0.512, y=0.438, width=0.231, height=0.604
-```
-
-### 10.4 Class design recommendation
-
-Start simple. Do not create too many classes at once.
-
-Recommended first training classes:
-
-```text
-person
-backpack
-handbag
-suitcase
-trolley_bag
-suspicious_object
-dangerous_object
-phone
-laptop
-bottle
-```
-
-For the first training round, the most important classes are:
-
-```text
-person
-backpack
-handbag
-suitcase
-suspicious_object
-dangerous_object
-```
-
-Use only safe, approved, non-functional lab props or institution-provided data for restricted/dangerous-object demonstrations.
-
-### 10.5 Create dataset folders
-
-```bat
-python scripts\create_dataset_folders.py
-```
-
-### 10.6 Train YOLO
-
-CPU training is possible but slow. GPU is strongly recommended.
-
-Basic CPU command:
-
-```bat
-python scripts\train_yolo.py --data configs\data.yaml --base yolo11n.pt --epochs 80 --imgsz 640 --batch 8 --device cpu
-```
-
-GPU command if CUDA is available:
-
-```bat
-python scripts\train_yolo.py --data configs\data.yaml --base yolo11n.pt --epochs 80 --imgsz 640 --batch 8 --device 0
-```
-
-The trained model should appear here:
-
-```text
-runs\screening\yolo_screening_detector\weights\best.pt
-```
-
-### 10.7 Run pipeline with trained model
-
-After training:
-
-```bat
-python scripts\run_webcam.py --weights runs\screening\yolo_screening_detector\weights\best.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase,suspicious_object,dangerous_object --prefer-sam-masks --imgsz 640 --device cpu --display
-```
-
-For prerecorded video:
-
-```bat
-python scripts\run_video.py --source input\test_video.mp4 --weights runs\screening\yolo_screening_detector\weights\best.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 3 --sam-classes backpack,handbag,suitcase,suspicious_object,dangerous_object --prefer-sam-masks --imgsz 640 --device cpu --output-video outputs\trained_annotated.mp4 --output-json outputs\trained_events.json --output-tracks outputs\trained_tracks.csv
-```
+Adjust this before training if the class list changes.
 
 ---
 
-## 11. What to do after training
+## 12. Tuning guide
 
-### 11.1 Validate detection quality
+### 12.1 Bags flicker or disappear
 
-Check:
-
-```text
-Does the model detect people reliably?
-Does it detect bags from different angles?
-Does it confuse background furniture with bags?
-Does it miss small objects?
-Does it produce too many false positives?
-```
-
-### 11.2 Tune confidence threshold
-
-If too many false positives:
-
-```bat
---conf 0.45
-```
-
-If too many missed detections:
+Try:
 
 ```bat
 --conf 0.25
 ```
 
-### 11.3 Tune SAM classes
-
-Before training:
+If still too strict:
 
 ```bat
---sam-classes backpack,handbag,suitcase
+--conf 0.22
 ```
 
-After training:
+Also lower per-class bag thresholds only if needed:
 
-```bat
---sam-classes backpack,handbag,suitcase,suspicious_object,dangerous_object
+```yaml
+min_conf_by_class:
+  backpack: 0.22
+  handbag: 0.22
+  suitcase: 0.25
 ```
 
-### 11.4 Tune relationship memory
+### 12.2 Fake people appear
 
-Open:
+Raise person-specific confidence:
+
+```yaml
+min_conf_by_class:
+  person: 0.60
+```
+
+If still bad:
+
+```yaml
+min_conf_by_class:
+  person: 0.65
+```
+
+Also use bbox shape/area filters and avoid static clutter zones.
+
+### 12.3 Owner lines remain too long
+
+Check owner-link TTL/display settings in the visualization or memory configuration. Relationship memory should persist internally, but visible lines should only be drawn when both tracks were seen recently.
+
+Also check:
 
 ```text
-configs\tracking_memory.yaml
+- Did the bag/person actually disappear from tracking?
+- Is FPS very low, causing frame-based TTL to feel too long?
+- Is the owner-link drawing using last-seen tracks instead of current/recent tracks?
 ```
 
-Tune parameters related to:
-
-```text
-minimum contact frames
-maximum owner distance
-stationary threshold
-separation threshold
-owner link strength threshold
-```
-
-### 11.5 Build test scenarios
-
-Create short test videos for:
-
-```text
-1. Person enters with bag and leaves with bag.
-2. Person enters with bag, puts it down, walks away.
-3. Two people cross paths.
-4. Two people with similar clothing pass each other.
-5. Person leaves frame and returns later.
-6. Bag is moved by another person.
-7. Background has bag-like clutter.
-```
-
-Save outputs for each scenario and compare:
-
-```text
-annotated video
-tracks CSV
-events JSON
-```
-
----
-
-## 12. Troubleshooting
-
-### 12.1 `best.pt` not found
-
-Error:
-
-```text
-FileNotFoundError: runs\screening\yolo_screening_detector\weights\best.pt
-```
-
-Cause:
-
-```text
-You have not trained the custom model yet.
-```
-
-Fix:
-
-```bat
---weights yolo11n.pt
-```
-
-Only use `best.pt` after training creates it.
-
-### 12.2 Input video not found
-
-Error:
-
-```text
-RuntimeError: Could not open source: input/test_video.mp4
-```
-
-Fix:
-
-```text
-Put a video at input\test_video.mp4
-```
-
-or pass full path:
-
-```bat
-python scripts\run_video.py --source "C:\Users\Misha\Desktop\my_video.mp4" --weights yolo11n.pt --disable-sam
-```
-
-### 12.3 Webcam is slow
-
-Use:
-
-```bat
---imgsz 640 --device cpu --disable-sam
-```
-
-or reduce SAM frequency:
-
-```bat
---sam-every-n 40 --sam-max-objects 1
-```
-
-### 12.4 CUDA is not available
+### 12.4 No person-bag connection appears
 
 Check:
+
+```text
+- Did you use --no-owner-links?
+- Did YOLO detect the bag as backpack/handbag/suitcase?
+- Was the bag close to the person long enough?
+- Are risk_config.yaml association thresholds too strict?
+- Is FPS very low?
+```
+
+### 12.5 SAM masks look stale or wrong
+
+Try one of these:
+
+```bat
+--sam-every-n 10
+```
+
+```bat
+--no-reuse-masks
+```
+
+or remove:
+
+```bat
+--prefer-sam-masks
+```
+
+For tracking stability, it is often better to let YOLO boxes drive tracking and use SAM mainly for visualization/mask geometry.
+
+### 12.6 FPS is too low
+
+Fastest command:
+
+```bat
+python scripts\run_webcam.py --weights yolo11n.pt --disable-sam --imgsz 320 --device cpu --display --no-save-video
+```
+
+Balanced CPU command:
+
+```bat
+python scripts\run_webcam.py --weights yolo11n.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 30 --sam-max-objects 1 --sam-classes backpack,handbag,suitcase --imgsz 320 --device cpu --display
+```
+
+Check CUDA:
 
 ```bat
 python -c "import torch; print('CUDA:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
 ```
 
-If it prints:
-
-```text
-CUDA: False
-CPU only
-```
-
-then use CPU-friendly commands.
-
-### 12.5 The preview opens but output video is missing
-
-Make sure you did not pass:
+If CUDA is available:
 
 ```bat
---no-save-video
-```
-
-Default webcam output:
-
-```text
-outputs\webcam_annotated.mp4
-```
-
-Default video output:
-
-```text
-outputs\annotated_video.mp4
-```
-
-### 12.6 People merge into one ID
-
-This should be much harder now because of group-safe assignment.
-
-Try:
-
-```text
-- Increase image size to 640.
-- Install optional Torchreid backend.
-- Make ReID thresholds stricter in configs/tracking_memory.yaml.
-- Check if two people are visually too similar and heavily overlapping.
-```
-
-### 12.7 Same person becomes G12/G15 later
-
-Try:
-
-```text
-- Install optional Torchreid backend.
-- Use better lighting.
-- Use higher imgsz if CPU allows.
-- Reduce occlusion by testing with clearer movement.
-- Later add offline track stitching for prerecorded videos.
+python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device 0 --display
 ```
 
 ---
 
-## 13. Recommended next development tasks
+## 13. Troubleshooting
 
-### Task A — Dataset frame extraction mode
+### 13.1 `OSNet is not available` after installing Torchreid
 
-Add a script that saves frames for labeling:
-
-```text
-- every N frames
-- frames with low confidence detections
-- frames where person IDs switch
-- frames where bag ownership changes
-- frames with false positives
-```
-
-Suggested script name:
+Symptom:
 
 ```text
-scripts/extract_training_frames.py
+Torchreid/OSNet backend requested but unavailable
+OSNet is not available
 ```
 
-Output:
+Most likely cause:
 
 ```text
-datasets/raw_frames/session_001/frame_000120.jpg
+pip installed a too-new PyTorch/Numpy stack for old Torchreid.
 ```
 
-### Task B — Label the first dataset
-
-Use any YOLO-compatible annotation tool.
-
-Label consistently:
-
-```text
-person
-backpack
-handbag
-suitcase
-trolley_bag
-suspicious_object
-dangerous_object
-phone
-laptop
-bottle
-```
-
-Keep labels simple for the first version.
-
-### Task C — Train weapon detector ✓ completed
-
-Knife + gun detector trained (YOLO11s, 40 epochs, mAP50 = 0.958). See section 10 and top of README.
-
-Next: train a screening detector on person/bag classes using `configs/data.yaml`.
-
-### Task D — Add offline track stitching
-
-For prerecorded video, we can do a two-pass cleanup:
-
-```text
-Pass 1: run detection/tracking and save tracks.csv
-Pass 2: analyze broken IDs and merge likely same-person tracks
-Pass 3: render a corrected video/report
-```
-
-This can fix cases where a person briefly becomes `G12` and later should be merged back into `G2`.
-
-### Task E — Improve abandoned-bag event report
-
-Add a clean event summary:
-
-```text
-Event: possible unattended bag
-Bag: G4
-Likely owner: G2
-First linked: frame 120
-Separated: frame 820
-Stationary duration: 12.4 seconds
-Owner distance: 340 px
-Confidence: medium/high
-```
-
-### Task F — Optional dashboard
-
-Create a simple dashboard later:
-
-```text
-- Video preview
-- Timeline of events
-- Table of tracks
-- Bag-owner graph
-- Export report button
-```
-
----
-
-## 14. Suggested team workflow
-
-Recommended split:
-
-```text
-Person 1: dataset collection + labeling
-Person 2: YOLO training + evaluation
-Person 3: tracking/ReID tuning
-Person 4: event logic + report/dashboard
-```
-
-Use Git branches:
-
-```text
-main
-feature/dataset-extraction
-feature/yolo-training
-feature/offline-track-stitching
-feature/dashboard
-```
-
-Before merging, run:
-
-```bat
-python scripts\smoke_test.py
-```
-
-And test at least one webcam/video command.
-
----
-
-## 15. Git basics for teammates
-
-Clone:
-
-```bat
-git clone <repo-url>
-cd screening_ai_project_deep_reid
-```
-
-Create branch:
-
-```bat
-git checkout -b feature/my-feature
-```
-
-Check changes:
-
-```bat
-git status
-```
-
-Commit:
-
-```bat
-git add .
-git commit -m "Add my feature"
-```
-
-Push:
-
-```bat
-git push origin feature/my-feature
-```
-
----
-
-## 16. Recommended demo script
-
-For a project demo, show:
-
-```text
-1. Run webcam baseline.
-2. Show person G IDs.
-3. Show bag segmentation mask.
-4. Show owner link between person and bag.
-5. Put bag down and move away.
-6. Show event in webcam_events.json.
-7. Open webcam_tracks.csv to show structured data.
-```
-
-Recommended command:
-
-```bat
-python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --display
-```
-
-After custom training, replace:
-
-```bat
---weights yolo11n.pt
-```
-
-with:
-
-```bat
---weights runs\screening\yolo_screening_detector\weights\best.pt
-```
-
----
-
-## 17. Safety and privacy notes
-
-```text
-- The system tracks anonymous IDs, not real identities.
-- It does not use facial recognition.
-- Face blur is available for privacy.
-- It is a visual prototype and should not be presented as a complete security scanner.
-- Real-world screening would require careful validation, safe sensors, privacy review, and human oversight.
-```
-
----
-
-## 18. One-page summary
-
-```text
-Current best command:
-python scripts\run_webcam.py --weights yolo11n.pt --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase --prefer-sam-masks --imgsz 640 --device cpu --display
-
-Current pipeline:
-YOLO -> BoT-SORT -> Deep ReID -> MemoryBank -> FastSAM for bags -> Person-bag relationship -> Video/JSON/CSV
-
-Weapon detector:
-Knife + gun, mAP50 = 0.958, weights: runs/detect/runs/screening/yolo_screening_detector-5/weights/best.pt
-
-Next major task:
-Integrate weapon detector into main pipeline -> tune thresholds -> demo.
-```
-
-
-## Windows OSNet troubleshooting: Torchreid installed but OSNet unavailable
-
-If `python scripts\check_reid_backend.py` says OSNet is unavailable even after `torchreid` is installed, the usual cause is that pip installed a very new PyTorch stack that old Torchreid does not fully support.
-
-Use the stable Windows ReID stack:
+Fix:
 
 ```bat
 deactivate
@@ -1362,15 +874,324 @@ python -m pip install -r requirements_windows_stable_reid.txt
 python scripts\check_reid_backend.py
 ```
 
-Expected result:
+Expected:
 
 ```text
 OSNet is available.
 ```
 
-This version of `check_reid_backend.py` prints the real Torchreid exception if OSNet still fails, instead of only showing the generic unavailable message.
+### 13.2 Python 3.14 environment
 
+Symptom:
 
-## Nested ROI Search Upgrade
+```text
+Installed packages show cp314
+OSNet/Torchreid does not load correctly
+```
 
-This version includes a second-pass YOLO ROI search inside selected person/bag boxes to recover small visible objects missed by full-frame detection because of overlapping bounding boxes. See `README_overlap_roi_upgrade.md` for details, configuration, and commands.
+Fix:
+
+```bat
+py -0p
+py -3.12 -m venv .venv
+```
+
+Use Python 3.12 for this project.
+
+### 13.3 Missing TensorBoard
+
+Symptom:
+
+```text
+ModuleNotFoundError: No module named 'tensorboard'
+```
+
+Fix:
+
+```bat
+python -m pip install tensorboard
+```
+
+Better fix: use `requirements_windows_stable_reid.txt`, which includes TensorBoard.
+
+### 13.4 Wrong Torchreid import path
+
+Symptom:
+
+```text
+ModuleNotFoundError: No module named 'torchreid.utils'
+```
+
+Cause:
+
+```text
+Some torchreid installs expose FeatureExtractor at torchreid.reid.utils instead of torchreid.utils.
+```
+
+Fix:
+
+Use the patched project files where `check_reid_backend.py` and `deep_reid.py` try both:
+
+```python
+from torchreid.utils import FeatureExtractor
+# fallback:
+from torchreid.reid.utils import FeatureExtractor
+```
+
+### 13.5 OSNet weight download fails
+
+Symptom:
+
+```text
+Downloading...
+From: https://drive.google.com/...
+Download failed
+```
+
+Fixes:
+
+```text
+- Check internet connection.
+- Try again later; Google Drive sometimes rate-limits.
+- Keep gdown==4.7.3 from the stable requirements.
+- Check whether the file already exists in:
+  C:\Users\<username>\.cache\torch\checkpoints\osnet_x0_25_imagenet.pth
+```
+
+### 13.6 `best.pt` not found
+
+Cause:
+
+```text
+You have not trained a custom model yet, or the path is wrong.
+```
+
+Fix:
+
+```bat
+--weights yolo11n.pt
+```
+
+Use `best.pt` only after training creates it or after you place the trained weights in the expected folder.
+
+### 13.7 Input video not found
+
+Cause:
+
+```text
+input\test_video.mp4 does not exist.
+```
+
+Fix:
+
+```text
+Put a file at input\test_video.mp4
+```
+
+or pass a full path:
+
+```bat
+python scripts\run_video.py --source "C:\Users\Misha\Desktop\my_video.mp4" --weights yolo11n.pt --disable-sam
+```
+
+### 13.8 `No module named screening_ai`
+
+Cause:
+
+```text
+You are probably not running from the project root, or the src folder is missing.
+```
+
+Fix:
+
+```bat
+cd C:\Users\Misha\Desktop\screening_ai_project_deep_reid
+python scripts\smoke_test.py
+```
+
+### 13.9 Webcam does not open
+
+Try camera index 1:
+
+```bat
+python scripts\run_webcam.py --source 1 --weights yolo11n.pt --disable-sam --imgsz 480 --device cpu --display
+```
+
+Also close other apps using the camera.
+
+### 13.10 Output video missing
+
+Check whether you used:
+
+```bat
+--no-save-video
+```
+
+Also check that the `outputs` folder exists:
+
+```bat
+python scripts\create_dataset_folders.py
+```
+
+### 13.11 Same person becomes G2/G5/G8 later
+
+Possible causes:
+
+```text
+- Person leaves frame for too long.
+- Person re-enters with different pose/scale/lighting.
+- Person crop is partial or side-clipped.
+- Bad-crop guard refuses to update memory from partial crops.
+- OSNet thresholds are strict to avoid wrong merges.
+- FPS is low, causing fewer good observations.
+```
+
+Fixes:
+
+```text
+- Keep the full body visible during the demo.
+- Improve lighting.
+- Use --imgsz 480 or --imgsz 640.
+- Avoid standing too close to the camera.
+- Use prerecorded video and the offline merge helper for final reports.
+```
+
+### 13.12 Two people merge into one ID
+
+Fixes:
+
+```text
+- Increase ReID/appearance thresholds in configs/tracking_memory.yaml.
+- Keep group-safe assignment enabled.
+- Avoid testing with two people in nearly identical clothing at first.
+- Increase YOLO image size.
+```
+
+---
+
+## 14. Training custom YOLO models
+
+The pretrained `yolo11n.pt` model is only a baseline. For the final project, train YOLO on project-specific classes and camera angles.
+
+### 14.1 Recommended training workflow
+
+```text
+Step 1: Collect safe project videos/images
+Step 2: Extract useful frames
+Step 3: Label frames in YOLO format
+Step 4: Split data into train/val
+Step 5: Update configs/data.yaml
+Step 6: Train YOLO
+Step 7: Validate results
+Step 8: Run the pipeline with best.pt
+Step 9: Tune tracking/memory/risk thresholds
+Step 10: Add SAM for trained object classes
+```
+
+### 14.2 Dataset folder layout
+
+```text
+datasets/screening_dataset/
+|-- images/
+|   |-- train/
+|   |-- val/
+|-- labels/
+|   |-- train/
+|   |-- val/
+```
+
+Each image needs a matching `.txt` label file:
+
+```text
+images/train/frame_000123.jpg
+labels/train/frame_000123.txt
+```
+
+### 14.3 YOLO label format
+
+Each label row:
+
+```text
+class_id center_x center_y width height
+```
+
+All values are normalized from 0 to 1.
+
+Example:
+
+```text
+0 0.512 0.438 0.231 0.604
+```
+
+Meaning:
+
+```text
+class 0, center x=0.512, center y=0.438, width=0.231, height=0.604
+```
+
+### 14.4 Recommended first classes
+
+Start simple:
+
+```text
+person
+backpack
+handbag
+suitcase
+trolley_bag
+phone
+laptop
+bottle
+suspicious_object
+dangerous_object
+```
+
+If you train or integrate a separate detector, make sure the class names match the names in `configs/data.yaml`, `configs/classes.yaml`, and `target_classes` in `configs/tracking_memory.yaml`.
+
+For restricted/dangerous-object demonstrations, use only safe approved lab props, institution-approved datasets, or synthetic/clearly non-functional examples. Do not collect data with real dangerous items.
+
+### 14.5 Create dataset folders
+
+```bat
+python scripts\create_dataset_folders.py
+```
+
+### 14.6 Train on CPU
+
+```bat
+python scripts\train_yolo.py --data configs\data.yaml --base yolo11n.pt --epochs 80 --imgsz 640 --batch 8 --device cpu
+```
+
+CPU training is slow.
+
+### 14.7 Train on GPU
+
+```bat
+python scripts\train_yolo.py --data configs\data.yaml --base yolo11n.pt --epochs 80 --imgsz 640 --batch 8 --device 0
+```
+
+Expected trained model:
+
+```text
+runs\screening\yolo_screening_detector\weights\best.pt
+```
+
+### 14.8 Run with trained model
+
+Webcam:
+
+```bat
+python scripts\run_webcam.py --weights runs\screening\yolo_screening_detector\weights\best.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase,suspicious_object,dangerous_object --prefer-sam-masks --imgsz 640 --device cpu --display
+```
+
+Prerecorded video:
+
+```bat
+python scripts\run_video.py --source input\test_video.mp4 --weights runs\screening\yolo_screening_detector\weights\best.pt --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 3 --sam-classes backpack,handbag,suitcase,suspicious_object,dangerous_object --prefer-sam-masks --imgsz 640 --device cpu --output-video outputs\trained_annotated.mp4 --output-json outputs\trained_events.json --output-tracks outputs\trained_tracks.csv
+```
+
+### 14.9 Optional detector integration note
+
+Earlier notes mention a trained knife/gun detector with strong validation metrics. Before documenting it as part of the final pipeline, verify that the actual weights file exists in the repository or shared drive and that `run_webcam.py` / `run_video.py` can load it directly or through a multi-model integration layer.
+
+Do not claim a trained detector is active in the demo unless the command actually uses its weights.
