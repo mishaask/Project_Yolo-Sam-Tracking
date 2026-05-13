@@ -17,4 +17,7 @@ risk_classes:
   - dangerous_object
   - knife
   - gun
+<<<<<<< HEAD
   - weapon
+=======
+>>>>>>> b00d683fc072ab36a0f7aa2b9ffefddf6ca9afcb
