@@ -1,4 +1,8 @@
 association:
+  # Visualization only: owner memory persists for abandoned-bag logic, but
+  # drawn magenta links should disappear quickly if either box is not visible.
+  owner_link_display_max_missing_frames: 3
+  owner_link_display_min_strength: 0.60
   max_owner_distance_px: 180.0
   min_owner_score: 0.45
   motion_window_frames: 20
@@ -20,6 +24,21 @@ unattended_bag:
   separation_threshold_frames: 90
   min_owner_contact_frames: 45
   cooldown_frames: 60
+
+# Avoid writing the same risk-object event every frame.
+risk_detection_cooldown_frames: 30
+
+# Risk objects are linked faster than bags because a knife/gun/custom dangerous
+# object may only be visible for a short moment. This is NOT the abandoned-bag
+# logic; it is a quick nearest-plausible-person ownership link for alerts.
+risk_object_link:
+  max_owner_distance_px: 230.0
+  min_owner_score: 0.16
+  score_gain: 0.70
+  score_decay: 0.98
+  min_contact_frames: 1
+  contact_distance_px: 230.0
+  separation_distance_px: 320.0
 
 segmentation:
   enabled: false

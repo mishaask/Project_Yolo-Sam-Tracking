@@ -9,12 +9,13 @@ from typing import Optional
 import cv2
 
 from screening_ai.appearance import configure_deep_person_reid, get_deep_person_reid_status
-from screening_ai.association import assign_bag_owners, owner_link_lines
+from screening_ai.association import assign_bag_owners, assign_object_owners, owner_link_lines
 from screening_ai.deep_reid import DeepPersonReID
 from screening_ai.detector import Detection, YoloDetector
 from screening_ai.memory import MemoryBank, bbox_iou_xyxy
 from screening_ai.privacy import FacePrivacyFilter
 from screening_ai.risk import Event, RiskEngine
+from screening_ai.roi_search import NestedRoiObjectSearch, RoiSearchConfig
 from screening_ai.segmenter import SamBoxSegmenter, SegmentationResult
 from screening_ai.utils import ensure_parent, load_yaml, parse_source
 from screening_ai.visualization import (
@@ -34,6 +35,7 @@ class ScreeningPipeline:
         classes_config: str = "configs/classes.yaml",
         risk_config: str = "configs/risk_config.yaml",
         memory_config: str = "configs/tracking_memory.yaml",
+        target_classes: Optional[set[str]] = None,
         sam_weights: str = "sam2_b.pt",
         enable_sam: bool = False,
         sam_every_n_frames: int = 5,
@@ -49,6 +51,11 @@ class ScreeningPipeline:
         draw_links: bool = True,
         blur_faces: bool = False,
         pause_recording_on_face: bool = False,
+        enable_roi_search: Optional[bool] = None,
+        roi_every_n_frames: Optional[int] = None,
+        roi_confidence: Optional[float] = None,
+        roi_imgsz: Optional[int] = None,
+        roi_max_parent_rois: Optional[int] = None,
     ) -> None:
         classes = load_yaml(classes_config)
         risk_cfg = load_yaml(risk_config)
@@ -57,6 +64,12 @@ class ScreeningPipeline:
         self.person_classes = set(classes.get("person_classes", ["person"]))
         self.bag_classes = set(classes.get("bag_classes", []))
         self.risk_classes = set(classes.get("risk_classes", []))
+
+        # Keep only project-relevant classes. This prevents random COCO classes
+        # such as cat/carrot/tie/teddy bear from entering tracking, SAM, CSV,
+        # events, and visualization. A custom model can add names here later.
+        cfg_target_classes = memory_cfg.get("target_classes", None)
+        self.target_classes = self._normalize_class_set(target_classes if target_classes is not None else cfg_target_classes)
 
         association_cfg = risk_cfg.get("association", {})
         unattended_cfg = risk_cfg.get("unattended_bag", {})
@@ -69,6 +82,17 @@ class ScreeningPipeline:
         self.owner_min_contact_frames = int(association_cfg.get("min_contact_frames", 45))
         self.owner_contact_distance_px = float(association_cfg.get("contact_distance_px", 150.0))
         self.owner_separation_distance_px = float(association_cfg.get("separation_distance_px", 260.0))
+        self.owner_link_display_max_missing_frames = int(association_cfg.get("owner_link_display_max_missing_frames", 3))
+        self.owner_link_display_min_strength = float(association_cfg.get("owner_link_display_min_strength", 0.60))
+
+        risk_link_cfg = risk_cfg.get("risk_object_link", {}) or {}
+        self.risk_owner_max_distance_px = float(risk_link_cfg.get("max_owner_distance_px", 230.0))
+        self.risk_owner_min_score = float(risk_link_cfg.get("min_owner_score", 0.16))
+        self.risk_owner_score_gain = float(risk_link_cfg.get("score_gain", 0.70))
+        self.risk_owner_score_decay = float(risk_link_cfg.get("score_decay", 0.98))
+        self.risk_owner_min_contact_frames = int(risk_link_cfg.get("min_contact_frames", 1))
+        self.risk_owner_contact_distance_px = float(risk_link_cfg.get("contact_distance_px", 230.0))
+        self.risk_owner_separation_distance_px = float(risk_link_cfg.get("separation_distance_px", 320.0))
 
         self.trail_length = int(memory_cfg.get("trail_length", 40))
         self.draw_trails = draw_trails
@@ -92,8 +116,25 @@ class ScreeningPipeline:
         self.min_conf_by_class = memory_cfg.get("min_conf_by_class", {}) or {}
         self.min_area_ratio_by_class = memory_cfg.get("min_area_ratio_by_class", {}) or {}
         self.max_area_ratio_by_class = memory_cfg.get("max_area_ratio_by_class", {}) or {}
+        self.min_height_width_ratio_by_class = memory_cfg.get("min_height_width_ratio_by_class", {}) or {}
+        self.max_height_width_ratio_by_class = memory_cfg.get("max_height_width_ratio_by_class", {}) or {}
+        self.person_low_conf_aspect_gate_below_conf = float(memory_cfg.get("person_low_conf_aspect_gate_below_conf", 0.65))
+        self.person_low_conf_min_height_width_ratio = float(memory_cfg.get("person_low_conf_min_height_width_ratio", 1.15))
         self.same_class_nms_iou = float(memory_cfg.get("same_class_nms_iou", 0.82))
         self.pause_recording_on_face = bool(pause_recording_on_face)
+
+        roi_cfg_dict = dict(memory_cfg.get("roi_inner_search", {}) or {})
+        if enable_roi_search is not None:
+            roi_cfg_dict["enabled"] = bool(enable_roi_search)
+        if roi_every_n_frames is not None:
+            roi_cfg_dict["every_n_frames"] = int(roi_every_n_frames)
+        if roi_confidence is not None:
+            roi_cfg_dict["roi_confidence"] = float(roi_confidence)
+        if roi_imgsz is not None:
+            roi_cfg_dict["roi_imgsz"] = int(roi_imgsz)
+        if roi_max_parent_rois is not None:
+            roi_cfg_dict["max_parent_rois_per_frame"] = int(roi_max_parent_rois)
+        self.roi_search_config = RoiSearchConfig.from_mapping(roi_cfg_dict)
 
         reid_cfg = memory_cfg.get("person_reid", {}) or {}
         self.person_reid = DeepPersonReID(
@@ -118,6 +159,7 @@ class ScreeningPipeline:
             device=device,
         )
         self.segmenter = SamBoxSegmenter(weights=sam_weights, enabled=enable_sam, device=device)
+        self.roi_search = NestedRoiObjectSearch(self.detector, self.roi_search_config)
         self.sam_every_n_frames = max(1, int(sam_every_n_frames))
         self.sam_max_objects = max(0, int(sam_max_objects))
         self.sam_classes = sam_classes
@@ -165,6 +207,7 @@ class ScreeningPipeline:
             unattended_cooldown_frames=int(unattended_cfg.get("cooldown_frames", 60)),
             separation_threshold_frames=int(unattended_cfg.get("separation_threshold_frames", 90)),
             min_owner_contact_frames=int(unattended_cfg.get("min_owner_contact_frames", 45)),
+            risk_detection_cooldown_frames=int(risk_cfg.get("risk_detection_cooldown_frames", 30)),
         )
         self.events: list[Event] = []
         self.recent_messages: list[str] = []
@@ -293,6 +336,9 @@ class ScreeningPipeline:
             "offline_merged_into",
             "local_tracker_id",
             "class_name",
+            "detection_source",
+            "parent_class_name",
+            "roi_level",
             "confidence",
             "x1",
             "y1",
@@ -323,6 +369,23 @@ class ScreeningPipeline:
             writer.writerows(self.track_rows)
 
 
+
+    @staticmethod
+    def _normalize_class_set(value) -> Optional[set[str]]:
+        """Return a normalized class whitelist, or None when all classes are allowed."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if value.strip().lower() in {"", "all", "none"}:
+                return None
+            items = [x.strip() for x in value.split(",")]
+        else:
+            items = [str(x).strip() for x in value]
+        normalized = {x for x in items if x}
+        if not normalized or "all" in {x.lower() for x in normalized}:
+            return None
+        return normalized
+
     def _filter_detections(self, frame, detections: list[Detection]) -> list[Detection]:
         """Remove obvious webcam clutter before memory/reID.
 
@@ -339,8 +402,14 @@ class ScreeningPipeline:
         filtered: list[Detection] = []
 
         for det in detections:
+            if self.target_classes is not None and det.class_name not in self.target_classes:
+                continue
+
             x1, y1, x2, y2 = det.bbox_xyxy.astype(float)
-            box_area_ratio = max(0.0, x2 - x1) * max(0.0, y2 - y1) / frame_area
+            box_w = max(0.0, x2 - x1)
+            box_h = max(0.0, y2 - y1)
+            height_width_ratio = box_h / max(box_w, 1.0)
+            box_area_ratio = box_w * box_h / frame_area
             cx = (x1 + x2) / 2.0 / max(1, width)
             cy = (y1 + y2) / 2.0 / max(1, height)
 
@@ -352,6 +421,19 @@ class ScreeningPipeline:
             max_area = float(self.max_area_ratio_by_class.get(det.class_name, 1.0))
             if box_area_ratio < min_area or box_area_ratio > max_area:
                 continue
+
+            min_hw_ratio = float(self.min_height_width_ratio_by_class.get(det.class_name, 0.0))
+            max_hw_ratio = float(self.max_height_width_ratio_by_class.get(det.class_name, 999.0))
+            if height_width_ratio < min_hw_ratio or height_width_ratio > max_hw_ratio:
+                continue
+
+            # A common webcam false-positive is clothes/chair/backpack detected as
+            # a low-confidence person with a wide, non-human-shaped bbox. Keep
+            # high-confidence/partial real people, but reject low-confidence
+            # person boxes that are too squat.
+            if det.class_name in self.person_classes:
+                if det.confidence < self.person_low_conf_aspect_gate_below_conf and height_width_ratio < self.person_low_conf_min_height_width_ratio:
+                    continue
 
             ignored = False
             for zone in self.ignored_zones_norm:
@@ -402,12 +484,17 @@ class ScreeningPipeline:
 
         candidate_indices = []
         for i, det in enumerate(detections):
-            if self.sam_classes is not None and det.class_name not in self.sam_classes:
+            # Always allow risk classes through SAM when SAM is enabled, even if
+            # the user only passed --sam-classes backpack,handbag,suitcase.
+            # This keeps the normal baseline command useful after training a
+            # knife/gun/custom-dangerous-object detector.
+            if self.sam_classes is not None and det.class_name not in self.sam_classes and det.class_name not in self.risk_classes:
                 continue
             candidate_indices.append(i)
 
-        # Prefer higher-confidence boxes. Limit count to keep webcam responsive.
-        candidate_indices.sort(key=lambda i: detections[i].confidence, reverse=True)
+        # Risk objects get first priority for SAM, then higher-confidence boxes.
+        # Limit count to keep webcam responsive.
+        candidate_indices.sort(key=lambda i: (detections[i].class_name in self.risk_classes, detections[i].confidence), reverse=True)
         candidate_indices = candidate_indices[: self.sam_max_objects]
 
         boxes_for_sam = [detections[i].bbox_xyxy for i in candidate_indices]
@@ -425,6 +512,16 @@ class ScreeningPipeline:
     def process_frame(self, frame, frame_idx: int):
         detections = self.detector.track_frame(frame)
         detections = self._filter_detections(frame, detections)
+
+        # Second-pass ROI search: run plain YOLO detection inside selected
+        # parent boxes (person/bag/suitcase) to recover small visible objects
+        # that the full-frame detector missed because boxes overlap. These
+        # supplemental detections are untracked by BoT-SORT; the MemoryBank can
+        # still assign/reconnect project-level global IDs to them.
+        roi_detections = self.roi_search.find_inner_detections(frame, frame_idx, detections)
+        if roi_detections:
+            detections = self._filter_detections(frame, detections + roi_detections)
+
         seen_global_ids: set[int] = set()
         frame_events: list[Event] = []
 
@@ -497,6 +594,7 @@ class ScreeningPipeline:
                 if old_mask is not None:
                     segmentations[i] = SegmentationResult(mask=old_mask)
 
+        frame_items = []
         for det, resolution, seg in zip(detections, resolutions, segmentations):
             mask = seg.mask if seg is not None else None
             memory = self.memory_bank.update(
@@ -510,31 +608,11 @@ class ScreeningPipeline:
                 mask=mask,
                 prefer_mask_geometry=self._prefer_mask_for_class(det.class_name),
             )
-
-            frame_events.extend(
-                self.risk_engine.detection_events(
-                    frame_idx=frame_idx,
-                    track_id=resolution.global_id,
-                    class_name=det.class_name,
-                    confidence=det.confidence,
-                )
-            )
-
-            draw_detection(
-                frame=frame,
-                bbox_xyxy=memory.smoothed_bbox_xyxy,
-                class_name=det.class_name,
-                track_id=resolution.global_id,
-                confidence=det.confidence,
-                mask=mask,
-                owner_id=memory.owner_id,
-                local_tracker_id=resolution.local_tracker_id,
-                reidentified_count=memory.reidentified_count,
-            )
-            self._record_track_row(frame_idx, memory)
+            frame_items.append((det, resolution, seg, memory))
 
         self.memory_bank.mark_missing(seen_global_ids)
 
+        # Bags need long relationship evidence before ownership is confirmed.
         assign_bag_owners(
             memory_bank=self.memory_bank,
             person_classes=self.person_classes,
@@ -550,12 +628,68 @@ class ScreeningPipeline:
             separation_distance_px=float(self.owner_separation_distance_px),
         )
 
+        # Risk objects such as knife/gun/custom dangerous classes should link
+        # quickly to the nearest plausible person, because they may be visible
+        # only briefly. This is intentionally separate from abandoned-bag logic.
+        if self.risk_classes:
+            assign_object_owners(
+                memory_bank=self.memory_bank,
+                person_classes=self.person_classes,
+                object_classes=self.risk_classes,
+                max_distance_px=self.risk_owner_max_distance_px,
+                min_owner_score=self.risk_owner_min_score,
+                motion_window_frames=self.motion_window_frames,
+                frame_idx=frame_idx,
+                score_decay=self.risk_owner_score_decay,
+                score_gain=self.risk_owner_score_gain,
+                min_contact_frames=self.risk_owner_min_contact_frames,
+                contact_distance_px=self.risk_owner_contact_distance_px,
+                separation_distance_px=self.risk_owner_separation_distance_px,
+            )
+
+        for det, resolution, seg, memory in frame_items:
+            mask = seg.mask if seg is not None else None
+            is_risk = det.class_name in self.risk_classes
+
+            frame_events.extend(
+                self.risk_engine.detection_events(
+                    frame_idx=frame_idx,
+                    track_id=resolution.global_id,
+                    class_name=det.class_name,
+                    confidence=det.confidence,
+                    owner_id=memory.owner_id,
+                )
+            )
+
+            draw_detection(
+                frame=frame,
+                bbox_xyxy=memory.smoothed_bbox_xyxy,
+                class_name=det.class_name,
+                track_id=resolution.global_id,
+                confidence=det.confidence,
+                mask=mask,
+                owner_id=memory.owner_id,
+                local_tracker_id=resolution.local_tracker_id,
+                reidentified_count=memory.reidentified_count,
+                is_risk=is_risk,
+            )
+            self._record_track_row(frame_idx, memory, det)
+
         frame_events.extend(self.risk_engine.unattended_bag_events(frame_idx, self.memory_bank))
 
         if self.draw_trails:
             draw_track_trails(frame, self.memory_bank, trail_length=self.trail_length)
         if self.draw_links:
-            draw_owner_links(frame, owner_link_lines(self.memory_bank, self.bag_classes))
+            draw_owner_links(
+                frame,
+                owner_link_lines(
+                    self.memory_bank,
+                    self.bag_classes | self.risk_classes,
+                    max_missing_frames=self.owner_link_display_max_missing_frames,
+                    min_link_strength=self.owner_link_display_min_strength,
+                    risk_classes=self.risk_classes,
+                ),
+            )
 
         if frame_events:
             self.events.extend(frame_events)
@@ -726,7 +860,7 @@ class ScreeningPipeline:
                 event.message = event.message.replace(f"track {old_id}", f"track {new_id}")
 
 
-    def _record_track_row(self, frame_idx: int, memory) -> None:
+    def _record_track_row(self, frame_idx: int, memory, detection: Optional[Detection] = None) -> None:
         x1, y1, x2, y2 = memory.smoothed_bbox_xyxy.astype(float)
         cx, cy = memory.last_center
         self.track_rows.append(
@@ -737,6 +871,9 @@ class ScreeningPipeline:
                 "offline_merged_into": "",
                 "local_tracker_id": "" if memory.local_tracker_id is None else int(memory.local_tracker_id),
                 "class_name": memory.class_name,
+                "detection_source": "" if detection is None else detection.source,
+                "parent_class_name": "" if detection is None or detection.parent_class_name is None else detection.parent_class_name,
+                "roi_level": "" if detection is None else int(detection.roi_level),
                 "confidence": float(memory.last_confidence),
                 "x1": round(float(x1), 2),
                 "y1": round(float(y1), 2),

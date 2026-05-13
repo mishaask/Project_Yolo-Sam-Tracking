@@ -15,6 +15,27 @@ appearance_weight: 0.58
 iou_weight: 0.17
 proximity_weight: 0.25
 
+
+# Main detection whitelist. The system ignores every detected class that is not
+# listed here. This is better than adding one-off blocks like cat: 1.00.
+# It keeps the prototype focused on the project classes and removes random COCO
+# mistakes such as cat/carrot/tie/teddy bear from memory, videos, CSV, and events.
+target_classes:
+  - person
+  - backpack
+  - handbag
+  - suitcase
+  - trolley_bag
+  - cell phone
+  - phone
+  - laptop
+  - bottle
+  - suspicious_object
+  - dangerous_object
+  - knife
+  - gun
+  - weapon
+
 # Practical webcam filters for static room clutter.
 ignored_zones_norm:
   - name: top_static_shelf
@@ -22,10 +43,22 @@ ignored_zones_norm:
     xyxy: [0.0, 0.0, 1.0, 0.16]
 
 min_conf_by_class:
-  person: 0.22
-  backpack: 0.25
-  handbag: 0.25
-  suitcase: 0.28
+  # Global YOLO --conf is intentionally lower now so weak bag detections can enter.
+  # Person is filtered much stricter here to remove chair/clothes false positives.
+  person: 0.60
+  backpack: 0.24
+  handbag: 0.24
+  suitcase: 0.30
+  trolley_bag: 0.30
+  cell phone: 0.30
+  phone: 0.30
+  laptop: 0.30
+  bottle: 0.30
+  suspicious_object: 0.25
+  dangerous_object: 0.25
+  knife: 0.25
+  gun: 0.25
+  weapon: 0.25
 
 min_area_ratio_by_class:
   person: 0.015
@@ -38,6 +71,18 @@ max_area_ratio_by_class:
   backpack: 0.70
   handbag: 0.65
   suitcase: 0.70
+
+# Additional bbox-shape filters. height_width_ratio = bbox_height / bbox_width.
+# This removes many chair/clothes-as-person false positives while keeping real
+# high-confidence partial people.
+min_height_width_ratio_by_class:
+  person: 0.55
+
+max_height_width_ratio_by_class:
+  person: 4.8
+
+person_low_conf_aspect_gate_below_conf: 0.70
+person_low_conf_min_height_width_ratio: 1.15
 
 same_class_nms_iou: 0.78
 reid_message_cooldown_frames: 120
@@ -98,3 +143,41 @@ offline_merge:
   secondary_weight: 0.12
   gap_weight: 0.08
   same_side_bonus: 0.08
+
+# Second-pass nested ROI search for overlapping boxes.
+# Goal: when a person/bag bbox hides a small visible item from full-frame YOLO,
+# run a small YOLO detect() pass inside the parent box and add supplemental
+# detections before SAM/memory/risk logic.
+roi_inner_search:
+  enabled: true
+  every_n_frames: 8
+  parent_classes: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]
+  max_parent_rois_per_frame: 2
+  max_inner_detections_per_roi: 5
+  min_parent_confidence: 0.25
+  roi_confidence: 0.20
+  roi_imgsz: 320
+  padding_ratio: 0.12
+  duplicate_same_class_iou: 0.55
+  require_center_inside_parent: true
+  inside_parent_margin_px: 8.0
+  min_child_area_ratio_of_frame: 0.00025
+  max_child_area_ratio_of_parent: 0.65
+
+  # Person ROI: do not rediscover people inside people; look for carried/worn
+  # bags, everyday items, and trained risk classes. Before training, yolo11n.pt
+  # can only find its COCO classes. After training, knife/gun/weapon/etc. are
+  # included here automatically if your model outputs those class names.
+  include_classes_by_parent:
+    person: ["backpack", "handbag", "suitcase", "trolley_bag", "phone", "cell phone", "laptop", "bottle", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
+    backpack: ["phone", "cell phone", "laptop", "bottle", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
+    handbag: ["phone", "cell phone", "laptop", "bottle", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
+    suitcase: ["phone", "cell phone", "laptop", "bottle", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
+    trolley_bag: ["phone", "cell phone", "laptop", "bottle", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
+
+  exclude_classes_by_parent:
+    person: ["person"]
+    backpack: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]
+    handbag: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]
+    suitcase: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]
+    trolley_bag: ["person", "backpack", "handbag", "suitcase", "trolley_bag"]

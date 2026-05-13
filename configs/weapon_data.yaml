@@ -1,0 +1,13 @@
+# Dataset config for weapon detection fine-tuning (knife + gun).
+# Download the dataset first with: python scripts/download_weapon_dataset.py
+#
+# After training, use the resulting best.pt to demo weapon detection:
+#   python scripts/run_video.py --weights runs/screening/weapon_detector/weights/best.pt ...
+
+path: datasets/weapon_dataset
+train: images/train
+val: images/val
+
+names:
+  0: knife
+  1: gun

@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640, help="Training image size.")
     parser.add_argument("--batch", type=int, default=8, help="Batch size.")
     parser.add_argument("--device", default=None, help="Optional device, e.g. 'cpu', '0', 'cuda:0'.")
+    parser.add_argument("--lr0", type=float, default=None, help="Initial learning rate (default: YOLO's 0.01).")
     return parser
 
 
@@ -31,6 +32,8 @@ def main() -> None:
     }
     if args.device is not None:
         train_kwargs["device"] = args.device
+    if args.lr0 is not None:
+        train_kwargs["lr0"] = args.lr0
 
     model.train(**train_kwargs)
     model.val(data=args.data)

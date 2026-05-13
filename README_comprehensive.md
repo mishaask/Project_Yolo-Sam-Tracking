@@ -1327,3 +1327,8 @@ FastSAM-s.pt is preferred for CPU demos.
 imgsz 640 is better quality but slower.
 imgsz 320/480 is better for live FPS.
 ```
+
+
+## Nested ROI Search Upgrade
+
+This version includes a second-pass YOLO ROI search inside selected person/bag boxes to recover small visible objects missed by full-frame detection because of overlapping bounding boxes. See `README_overlap_roi_upgrade.md` for details, configuration, and commands.

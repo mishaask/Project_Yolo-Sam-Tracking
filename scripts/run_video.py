@@ -18,10 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classes", default="configs/classes.yaml", help="Class groups YAML.")
     parser.add_argument("--risk", default="configs/risk_config.yaml", help="Risk config YAML.")
     parser.add_argument("--memory", default="configs/tracking_memory.yaml", help="Project-level memory/reID config YAML.")
+    parser.add_argument("--target-classes", default=None, help="Optional comma-separated whitelist of YOLO class names to keep. Default = use configs/tracking_memory.yaml target_classes. Use all to disable whitelist.")
     parser.add_argument("--output-video", default="outputs/annotated_video.mp4", help="Output annotated video path.")
     parser.add_argument("--output-json", default="outputs/events.json", help="Output JSON event report path.")
     parser.add_argument("--output-tracks", default="outputs/tracks.csv", help="Per-frame track CSV path.")
-    parser.add_argument("--conf", type=float, default=0.35, help="YOLO confidence threshold.")
+    parser.add_argument("--conf", type=float, default=0.25, help="Base YOLO confidence threshold. Keep low for weak bag detections; class-specific filters in tracking_memory.yaml keep person stricter.")
     parser.add_argument("--imgsz", type=int, default=640, help="YOLO image size.")
     parser.add_argument("--device", default=None, help="Optional device, e.g. 'cpu', '0', 'cuda:0'.")
     parser.add_argument("--sam-weights", default="sam2_b.pt", help="SAM/SAM2/MobileSAM weights path.")
@@ -39,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-trails", action="store_true", help="Disable drawing movement trails.")
     parser.add_argument("--no-owner-links", action="store_true", help="Disable drawing person-bag owner links.")
     parser.add_argument("--pause-recording-on-face", action="store_true", help="Privacy option: do not write video frames when a face-like region is visible. This is face detection only, not recognition.")
+    parser.add_argument("--disable-roi-search", action="store_true", help="Disable nested YOLO ROI search inside person/bag boxes.")
+    parser.add_argument("--roi-every-n", type=int, default=None, help="Override nested ROI search frequency. Example: 10 means every 10 frames.")
+    parser.add_argument("--roi-conf", type=float, default=None, help="Override nested ROI YOLO confidence threshold.")
+    parser.add_argument("--roi-imgsz", type=int, default=None, help="Override nested ROI YOLO image size.")
+    parser.add_argument("--roi-max-parent-rois", type=int, default=None, help="Maximum parent person/bag boxes searched per ROI pass.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional frame limit for quick testing.")
     return parser
 
@@ -54,12 +60,19 @@ def main() -> None:
     elif args.sam_tracking_classes.strip():
         sam_tracking_classes = {x.strip() for x in args.sam_tracking_classes.split(",") if x.strip()}
 
+    target_classes_arg = None
+    if args.target_classes is not None and args.target_classes.lower() != "all":
+        target_classes_arg = {x.strip() for x in args.target_classes.split(",") if x.strip()}
+    elif args.target_classes is not None and args.target_classes.lower() == "all":
+        target_classes_arg = {"all"}
+
     pipeline = ScreeningPipeline(
         yolo_weights=args.weights,
         tracker_config=args.tracker,
         classes_config=args.classes,
         risk_config=args.risk,
         memory_config=args.memory,
+        target_classes=target_classes_arg,
         sam_weights=args.sam_weights,
         enable_sam=not args.disable_sam,
         sam_every_n_frames=args.sam_every_n,
@@ -75,6 +88,11 @@ def main() -> None:
         draw_links=not args.no_owner_links,
         blur_faces=args.blur_faces,
         pause_recording_on_face=args.pause_recording_on_face,
+        enable_roi_search=not args.disable_roi_search,
+        roi_every_n_frames=args.roi_every_n,
+        roi_confidence=args.roi_conf,
+        roi_imgsz=args.roi_imgsz,
+        roi_max_parent_rois=args.roi_max_parent_rois,
     )
 
     pipeline.run(

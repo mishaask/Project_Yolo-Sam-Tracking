@@ -31,6 +31,7 @@ class RiskEngine:
         unattended_cooldown_frames: int = 60,
         separation_threshold_frames: int = 90,
         min_owner_contact_frames: int = 45,
+        risk_detection_cooldown_frames: int = 30,
     ) -> None:
         self.risk_classes = risk_classes
         self.bag_classes = bag_classes
@@ -40,18 +41,34 @@ class RiskEngine:
         self.separation_threshold_frames = separation_threshold_frames
         self.min_owner_contact_frames = min_owner_contact_frames
         self._last_unattended_alert_frame: dict[int, int] = {}
+        self._last_risk_alert_frame: dict[int, int] = {}
+        self.risk_detection_cooldown_frames = int(risk_detection_cooldown_frames)
 
-    def detection_events(self, frame_idx: int, track_id: int, class_name: str, confidence: float) -> list[Event]:
+    def detection_events(
+        self,
+        frame_idx: int,
+        track_id: int,
+        class_name: str,
+        confidence: float,
+        owner_id: int | None = None,
+    ) -> list[Event]:
         if class_name not in self.risk_classes:
             return []
 
+        last_alert = self._last_risk_alert_frame.get(track_id, -10**9)
+        if frame_idx - last_alert < self.risk_detection_cooldown_frames:
+            return []
+        self._last_risk_alert_frame[track_id] = frame_idx
+
+        owner_text = f" linked to person G{owner_id}" if owner_id is not None else ""
         return [
             Event(
                 frame=frame_idx,
                 type="risk_object_detected",
-                message=f"Risk-class object detected: {class_name} on track {track_id}",
+                message=f"Risk-class object detected: {class_name} G{track_id}{owner_text}",
                 track_id=track_id,
                 class_name=class_name,
+                owner_id=owner_id,
                 confidence=confidence,
             )
         ]

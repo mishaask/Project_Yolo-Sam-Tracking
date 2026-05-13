@@ -36,10 +36,10 @@ def movement_similarity(a: TrackMemory, b: TrackMemory, window: int = 20) -> flo
     return max(0.0, min(1.0, cosine))
 
 
-def assign_bag_owners(
+def assign_object_owners(
     memory_bank: MemoryBank,
     person_classes: set[str],
-    bag_classes: set[str],
+    object_classes: set[str],
     frame_idx: int = 0,
     max_distance_px: float = 180.0,
     min_owner_score: float = 0.45,
@@ -63,9 +63,9 @@ def assign_bag_owners(
       - owner_last_near_frame: last frame where bag and person were near/contacting
     """
     people = [t for t in memory_bank.active_tracks() if t.class_name in person_classes]
-    bags = [t for t in memory_bank.active_tracks() if t.class_name in bag_classes]
+    objects = [t for t in memory_bank.active_tracks() if t.class_name in object_classes]
 
-    for bag in bags:
+    for bag in objects:
         for person_id in list(bag.owner_scores.keys()):
             bag.owner_scores[person_id] *= score_decay
             if bag.owner_scores[person_id] < 0.02:
@@ -148,19 +148,65 @@ def assign_bag_owners(
                 bag.owner_separated_from_frame = None
 
 
+def assign_bag_owners(
+    memory_bank: MemoryBank,
+    person_classes: set[str],
+    bag_classes: set[str],
+    frame_idx: int = 0,
+    max_distance_px: float = 180.0,
+    min_owner_score: float = 0.45,
+    motion_window_frames: int = 20,
+    score_decay: float = 0.98,
+    score_gain: float = 0.12,
+    min_contact_frames: int = 45,
+    contact_distance_px: float = 150.0,
+    separation_distance_px: float = 260.0,
+) -> None:
+    """Backward-compatible wrapper for the original bag-owner logic."""
+    assign_object_owners(
+        memory_bank=memory_bank,
+        person_classes=person_classes,
+        object_classes=bag_classes,
+        frame_idx=frame_idx,
+        max_distance_px=max_distance_px,
+        min_owner_score=min_owner_score,
+        motion_window_frames=motion_window_frames,
+        score_decay=score_decay,
+        score_gain=score_gain,
+        min_contact_frames=min_contact_frames,
+        contact_distance_px=contact_distance_px,
+        separation_distance_px=separation_distance_px,
+    )
+
+
 def owner_link_lines(
     memory_bank: MemoryBank,
-    bag_classes: set[str],
-) -> list[tuple[tuple[int, int], tuple[int, int], int, int]]:
-    """Return lines that can be drawn between a bag and its likely owner."""
+    object_classes: set[str],
+    max_missing_frames: int = 3,
+    min_link_strength: float = 0.60,
+    risk_classes: set[str] | None = None,
+) -> list[tuple]:
+    """Return lines that can be drawn between a bag and its likely owner.
+
+    Ownership memory may intentionally live for a long time because it is needed
+    for abandoned-bag reasoning. Visualization should be stricter: draw a link
+    only while both tracks are freshly visible/recently visible, otherwise old
+    last-known centers make stale Gbag->Gperson lines stay on screen after the
+    box is gone.
+    """
     lines = []
-    for bag in memory_bank.active_tracks():
-        if bag.class_name not in bag_classes or bag.owner_id is None:
+    risk_classes = risk_classes or set()
+    for bag in memory_bank.active_tracks(max_missing_frames=max_missing_frames):
+        if bag.class_name not in object_classes or bag.owner_id is None:
+            continue
+        if bag.owner_link_strength < min_link_strength:
             continue
         owner = memory_bank.tracks.get(bag.owner_id)
         if owner is None:
             continue
+        if owner.missing_frames > max_missing_frames:
+            continue
         p1 = (int(round(bag.last_center[0])), int(round(bag.last_center[1])))
         p2 = (int(round(owner.last_center[0])), int(round(owner.last_center[1])))
-        lines.append((p1, p2, bag.global_id, owner.global_id))
+        lines.append((p1, p2, bag.global_id, owner.global_id, bag.class_name in risk_classes))
     return lines
