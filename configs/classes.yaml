@@ -15,3 +15,5 @@ everyday_classes:
 risk_classes:
   - suspicious_object
   - dangerous_object
+  - knife
+  - gun

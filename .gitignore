@@ -4,6 +4,14 @@ __pycache__/
 runs/
 outputs/*.mp4
 outputs/*.json
+outputs/*.csv
 input/*.mp4
+input/*.avi
+input/*.mov
 *.pt
 .DS_Store
+
+# Datasets — trop volumineux pour Git, ne pas pusher
+datasets/screening_dataset/images/
+datasets/screening_dataset/labels/
+datasets/weapon_dataset/

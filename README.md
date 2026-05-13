@@ -194,7 +194,25 @@ python -m pip install -r requirements_reid_optional.txt
 
 If the optional ReID install fails, the project still runs using the built-in Torchvision fallback.
 
-### 3.2 Windows PowerShell setup
+### 3.2 Download SAM weights (required for segmentation)
+
+SAM weights are not included in the repository. Download FastSAM-s (recommended, lightweight):
+
+**macOS / Linux:**
+```bash
+curl -L https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v1.0/FastSAM-s.pt -o FastSAM-s.pt
+```
+
+**Windows:**
+```bat
+curl -L https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v1.0/FastSAM-s.pt -o FastSAM-s.pt
+```
+
+Place the file in the project root folder (next to `requirements.txt`).
+
+If you prefer to skip segmentation, pass `--disable-sam` to any run command.
+
+### 3.3 Windows PowerShell setup
 
 ```powershell
 python -m venv .venv
