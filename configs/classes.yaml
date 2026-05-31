@@ -9,6 +9,7 @@ bag_classes:
 
 everyday_classes:
   - phone
+  - cell phone
   - laptop
   - bottle
 

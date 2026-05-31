@@ -9,7 +9,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from screening_ai.association import assign_bag_owners
+from types import SimpleNamespace
 from screening_ai.memory import MemoryBank
+from screening_ai.risk import RiskClusterManager, RiskConfirmationFilter
 
 
 def test_association() -> None:
@@ -88,12 +90,79 @@ def test_group_safe_no_visible_person_collapse() -> None:
     assert b.global_id != a.global_id, "Two visible people must not collapse into one global ID."
 
 
+def test_risk_confirmation_filter() -> None:
+    confirm = RiskConfirmationFilter(classes={"knife"}, enabled=True, window_frames=5, min_hits=3, match_iou=0.10, match_center_distance_px=80.0)
+
+    def det(frame_shift: float):
+        return SimpleNamespace(
+            bbox_xyxy=np.array([100 + frame_shift, 100, 150 + frame_shift, 160], dtype=float),
+            class_id=0,
+            class_name="knife",
+            confidence=0.8,
+            track_id=None,
+            source="secondary",
+        )
+
+    d0 = det(0)
+    confirm.update(0, [d0])
+    assert not confirm.is_confirmed(d0, 0), "One-frame risk detection should not be confirmed."
+
+    d1 = det(5)
+    confirm.update(1, [d1])
+    assert not confirm.is_confirmed(d1, 1), "Two nearby hits should still be pending."
+
+    d2 = det(10)
+    confirm.update(2, [d2])
+    assert confirm.is_confirmed(d2, 2), "Three nearby hits inside the window should be confirmed."
+
+    far = SimpleNamespace(
+        bbox_xyxy=np.array([400, 100, 450, 160], dtype=float),
+        class_id=0,
+        class_name="knife",
+        confidence=0.8,
+        track_id=None,
+        source="secondary",
+    )
+    confirm.update(3, [far])
+    assert not confirm.is_confirmed(far, 3), "A spatially separate one-frame hit should remain pending."
+
+
+
+def test_risk_cluster_manager() -> None:
+    manager = RiskClusterManager(
+        classes={"knife"},
+        enabled=True,
+        match_center_distance_px=80.0,
+        warning_cooldown_frames=3,
+        confirmed_linked_frames=4,
+        repeated_warning_window_frames=20,
+        repeated_warning_count=2,
+    )
+    box = np.array([100, 100, 150, 160], dtype=float)
+
+    cluster, events0 = manager.update_detection(0, "knife", box, 0.80, owner_id=1, source_track_id=10)
+    assert cluster is not None
+    assert cluster.cluster_id == "R1"
+    assert any(event.type == "risk_warning" for event in events0), "First confirmed cluster should create a warning."
+
+    cluster, _ = manager.update_detection(1, "knife", box + 2, 0.82, owner_id=1, source_track_id=11)
+    cluster, _ = manager.update_detection(2, "knife", box + 3, 0.81, owner_id=1, source_track_id=12)
+    cluster, events3 = manager.update_detection(4, "knife", box + 4, 0.83, owner_id=1, source_track_id=13)
+
+    assert cluster is not None
+    assert cluster.cluster_id == "R1", "Nearby hits should stay in the same temporary R# cluster."
+    assert any(event.type == "risk_object_confirmed" for event in events3), "Long enough person-linked cluster should become confirmed."
+    assert any(event.type == "risk_repeated_warning" for event in events3), "Repeated warnings for one person should escalate."
+
+
 def main() -> None:
     test_association()
     test_reconnect_with_local_id_change()
     test_mask_geometry()
     test_group_safe_no_visible_person_collapse()
-    print("Smoke tests passed: association, reconnect, SAM mask geometry, and group-safe ReID work.")
+    test_risk_confirmation_filter()
+    test_risk_cluster_manager()
+    print("Smoke tests passed: association, reconnect, SAM mask geometry, group-safe ReID, risk confirmation, and risk clustering work.")
 
 
 if __name__ == "__main__":

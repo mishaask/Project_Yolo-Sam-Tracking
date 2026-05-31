@@ -28,6 +28,44 @@ unattended_bag:
 # Avoid writing the same risk-object event every frame.
 risk_detection_cooldown_frames: 30
 
+
+# Optional second YOLO model used for trained risk-object detections.
+# Enabled only when --secondary-weights is provided.
+secondary_detector:
+  target_classes: ["knife", "gun"]
+  conf: 0.35
+  imgsz: 640
+  iou: 0.45
+  max_det: 20
+
+# Temporal confirmation for risk objects. A risk object must be seen near the
+# same location several times before it is drawn, logged, segmented, or linked.
+risk_confirmation:
+  enabled: true
+  classes: ["knife", "gun", "weapon", "dangerous_object", "suspicious_object"]
+  window_frames: 5
+  min_hits: 3
+  match_iou: 0.10
+  match_center_distance_px: 140.0
+
+# RiskClusterManager: groups confirmed risk-object detections into temporary R#
+# clusters, then converts short evidence into WARNING events and long person-linked
+# evidence into ALERT events. This avoids displaying many unstable weapon G# IDs.
+risk_cluster:
+  enabled: true
+  classes: ["knife", "gun", "weapon", "dangerous_object", "suspicious_object"]
+  match_iou: 0.08
+  match_center_distance_px: 95.0
+  ttl_frames: 45
+  owner_link_gap_frames: 3
+  warning_cooldown_frames: 30
+  confirmed_linked_frames: 30
+  confirmed_cooldown_frames: 120
+  repeated_warning_window_frames: 300
+  repeated_warning_count: 10
+  repeated_warning_cooldown_frames: 300
+  high_confidence_warning: 0.85
+
 # Risk objects are linked faster than bags because a knife/gun/custom dangerous
 # object may only be visible for a short moment. This is NOT the abandoned-bag
 # logic; it is a quick nearest-plausible-person ownership link for alerts.

@@ -5,7 +5,10 @@ This repository is a Python prototype for detecting people and visible carried o
 ## Current pipeline
 
 Video / webcam
-  -> YOLO detection
+  -> Main YOLO detection/tracking for people and bags
+  -> Optional secondary YOLO predict() stream for trained risk-object classes
+  -> Detection merge
+  -> Temporal risk-object confirmation
   -> BoT-SORT short-term tracking
   -> relevant-class whitelist and clutter filtering
   -> Nested ROI Search inside selected person/bag boxes
@@ -33,6 +36,8 @@ Video / webcam
 [OK] Webcam/live-camera processing
 [OK] Prerecorded video processing
 [OK] YOLO object detection
+[OK] Optional dual-YOLO merge: main tracked detector + secondary predict-only risk detector
+[OK] Temporal risk-object confirmation, default 3 hits in 5 frames
 [OK] BoT-SORT local tracking
 [OK] Project global IDs: G1, G2, G3...
 [OK] Torchreid/OSNet person ReID backend
@@ -54,7 +59,7 @@ Video / webcam
 
 **Still in progress:**
 
-[TODO] Integrate any trained weapon/suspicious-object detector cleanly into the main pipeline
+[DONE] Integrate trained risk-object detector through --secondary-weights
 [TODO] Tune thresholds on real team videos
 [TODO] Improve event reports and dashboard/report view
 
@@ -212,6 +217,47 @@ python scripts\run_webcam.py --weights yolo11n.pt --conf 0.25 --sam-weights Fast
 
 
 This command is tuned for CPU and webcam testing. It keeps bag detections more easily while relying on class-specific filters to reduce bad person detections.
+
+
+### 7.2 Dual-YOLO live demo with trained risk-object model
+
+Use this when `best_v2.pt` is in the project root. The main model keeps person/bag tracking. The secondary model adds trained risk-object detections and the pipeline only draws/logs/links them after temporal confirmation.
+
+```bat
+python scripts\run_webcam.py --weights yolo11n.pt --secondary-weights best_v2.pt --secondary-target-classes knife,gun --secondary-conf 0.35 --secondary-iou 0.45 --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 10 --sam-max-objects 3 --sam-classes backpack,handbag,suitcase,knife,gun --prefer-sam-masks --sam-tracking-classes backpack,handbag,suitcase,knife,gun --imgsz 640 --device cpu --display --output-video outputs\webcam_dual_yolo.mp4 --output-json outputs\webcam_dual_yolo_events.json --output-tracks outputs\webcam_dual_yolo_tracks.csv
+```
+
+Faster CPU version:
+
+```bat
+python scripts\run_webcam.py --weights yolo11n.pt --secondary-weights best_v2.pt --secondary-target-classes knife,gun --secondary-conf 0.40 --secondary-iou 0.45 --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 20 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase,knife,gun --prefer-sam-masks --imgsz 320 --device cpu --display --output-video outputs\webcam_dual_yolo_fast.mp4 --output-json outputs\webcam_dual_yolo_fast_events.json --output-tracks outputs\webcam_dual_yolo_fast_tracks.csv
+```
+
+Debug raw secondary detections by adding `--disable-risk-smoothing`. Do not use that for the main demo because it allows one-frame flicker.
+
+### Live display/UI tuning
+
+The live OpenCV preview can now be made larger without changing the saved MP4 resolution:
+
+```powershell
+python scripts\run_webcam.py --weights yolo11n.pt --secondary-weights best_v2.pt --secondary-target-classes knife,gun --secondary-conf 0.55 --secondary-iou 0.30 --weapon-confirm-window 7 --weapon-confirm-min-hits 4 --weapon-confirm-match-center-px 80 --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 15 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase,knife,gun --prefer-sam-masks --sam-tracking-classes backpack,handbag,suitcase,knife,gun --imgsz 640 --device cpu --display --display-scale 1.5 --label-scale 0.42 --label-thickness 1 --event-overlay-position bottom-right --event-overlay-max-lines 5 --event-overlay-ttl-frames 150 --output-video outputs\webcam_dual_yolo_ui.mp4 --output-json outputs\webcam_dual_yolo_ui_events.json --output-tracks outputs\webcam_dual_yolo_ui_tracks.csv
+```
+
+Useful UI flags:
+
+```text
+--display-scale 1.5              Larger live preview window only; saved video stays original size.
+--display-width 1280             Optional explicit preview window width.
+--display-height 720             Optional explicit preview window height.
+--label-scale 0.42               Smaller bbox/owner/FPS text.
+--label-thickness 1              Thinner text.
+--event-overlay                  Enable blue/white event feed, enabled by default.
+--no-event-overlay               Disable event feed.
+--event-overlay-position         bottom-right, bottom-left, top-right, or top-left.
+--event-overlay-max-lines 5      Maximum visible notification rows.
+--event-overlay-ttl-frames 150   How long notifications remain visible.
+--event-overlay-scale 0.46       Event-feed text size.
+```
 
 ### 7.3 If bags still flicker too much
 
@@ -1195,3 +1241,61 @@ python scripts\run_video.py --source input\test_video.mp4 --weights runs\screeni
 Earlier notes mention a trained knife/gun detector with strong validation metrics. Before documenting it as part of the final pipeline, verify that the actual weights file exists in the repository or shared drive and that `run_webcam.py` / `run_video.py` can load it directly or through a multi-model integration layer.
 
 Do not claim a trained detector is active in the demo unless the command actually uses its weights.
+
+## Dual-YOLO risk-object integration
+
+The dual-YOLO mode keeps the original general detector as the tracked stream and adds a second predict-only detector:
+
+```text
+yolo11n.pt track() -> person/backpack/handbag/suitcase tracking
+best_v2.pt predict() -> risk-object boxes
+merged detections -> filtering -> temporal confirmation -> SAM -> MemoryBank -> risk/person-link logic
+```
+
+New flags:
+
+```text
+--secondary-weights           Optional second YOLO weights path, for example best_v2.pt
+--secondary-target-classes    Comma-separated secondary classes to keep
+--secondary-conf              Secondary YOLO confidence threshold
+--secondary-imgsz             Secondary YOLO image size
+--secondary-iou               Secondary NMS IoU threshold; lower reduces duplicate boxes
+--secondary-max-det           Maximum secondary boxes per frame
+--disable-risk-smoothing      Debug only; lets raw risk detections pass immediately
+--weapon-confirm-window       Override risk confirmation window size
+--weapon-confirm-min-hits     Override required hits inside the window
+```
+
+Default temporal confirmation is configured in `configs/risk_config.yaml`: 3 matching hits in a 5-frame window. Only confirmed risk-class detections are drawn, sent to SAM, linked to people, written to CSV, and logged to events JSON.
+
+---
+
+## RiskClusterManager upgrade
+
+The current dual-YOLO pipeline now separates people/bags from risk-object alerting:
+
+- people and bags still use normal `G#` MemoryBank/ReID tracking;
+- secondary-model risk detections are grouped into temporary `R#` risk clusters;
+- short confirmed detections create `risk_warning` events;
+- long person-linked clusters create `risk_object_confirmed` events;
+- repeated warnings for the same person create `risk_repeated_warning` events;
+- the live screen shows security alerts on the bottom-right and tracking/ReID debug messages on the bottom-left.
+
+Important flags:
+
+```bat
+--risk-cluster-match-center-px 95
+--risk-cluster-ttl-frames 45
+--risk-confirm-linked-frames 30
+--risk-warning-cooldown-frames 30
+--risk-repeat-warning-window-frames 300
+--risk-repeat-warning-count 10
+--event-overlay-position bottom-right
+--debug-overlay-position bottom-left
+```
+
+Recommended strict demo command:
+
+```bat
+python scripts\run_webcam.py --weights yolo11n.pt --secondary-weights best_v2.pt --secondary-target-classes knife,gun --secondary-conf 0.55 --secondary-iou 0.30 --weapon-confirm-window 7 --weapon-confirm-min-hits 4 --weapon-confirm-match-center-px 80 --risk-confirm-linked-frames 30 --risk-repeat-warning-count 10 --conf 0.25 --sam-weights FastSAM-s.pt --sam-every-n 15 --sam-max-objects 2 --sam-classes backpack,handbag,suitcase,knife,gun --prefer-sam-masks --sam-tracking-classes backpack,handbag,suitcase,knife,gun --imgsz 640 --device cpu --display --display-scale 1.5 --label-scale 0.42 --event-overlay-position bottom-right --debug-overlay-position bottom-left --output-video outputs\webcam_dual_yolo_cluster.mp4 --output-json outputs\webcam_dual_yolo_cluster_events.json --output-tracks outputs\webcam_dual_yolo_cluster_tracks.csv
+```

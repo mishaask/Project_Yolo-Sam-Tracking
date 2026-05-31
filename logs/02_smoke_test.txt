@@ -1,0 +1,1 @@
+Smoke tests passed: association, reconnect, SAM mask geometry, and group-safe ReID work.
