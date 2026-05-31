@@ -14,7 +14,7 @@ from screening_ai.deep_reid import DeepPersonReID
 from screening_ai.detector import Detection, YoloDetector
 from screening_ai.memory import MemoryBank, bbox_iou_xyxy
 from screening_ai.privacy import FacePrivacyFilter
-from screening_ai.risk import Event, RiskEngine
+from screening_ai.risk import Event, RiskCluster, RiskClusterManager, RiskConfirmationFilter, RiskEngine
 from screening_ai.roi_search import NestedRoiObjectSearch, RoiSearchConfig
 from screening_ai.segmenter import SamBoxSegmenter, SegmentationResult
 from screening_ai.utils import ensure_parent, load_yaml, parse_source
@@ -36,6 +36,25 @@ class ScreeningPipeline:
         risk_config: str = "configs/risk_config.yaml",
         memory_config: str = "configs/tracking_memory.yaml",
         target_classes: Optional[set[str]] = None,
+        secondary_weights: Optional[str] = None,
+        secondary_target_classes: Optional[set[str]] = None,
+        secondary_conf: Optional[float] = None,
+        secondary_imgsz: Optional[int] = None,
+        secondary_iou: Optional[float] = None,
+        secondary_max_det: Optional[int] = None,
+        risk_smoothing_enabled: Optional[bool] = None,
+        weapon_confirm_window: Optional[int] = None,
+        weapon_confirm_min_hits: Optional[int] = None,
+        weapon_confirm_match_iou: Optional[float] = None,
+        weapon_confirm_match_center_px: Optional[float] = None,
+        risk_cluster_enabled: Optional[bool] = None,
+        risk_cluster_match_iou: Optional[float] = None,
+        risk_cluster_match_center_px: Optional[float] = None,
+        risk_cluster_ttl_frames: Optional[int] = None,
+        risk_confirm_linked_frames: Optional[int] = None,
+        risk_warning_cooldown_frames: Optional[int] = None,
+        risk_repeat_warning_window_frames: Optional[int] = None,
+        risk_repeat_warning_count: Optional[int] = None,
         sam_weights: str = "sam2_b.pt",
         enable_sam: bool = False,
         sam_every_n_frames: int = 5,
@@ -56,6 +75,18 @@ class ScreeningPipeline:
         roi_confidence: Optional[float] = None,
         roi_imgsz: Optional[int] = None,
         roi_max_parent_rois: Optional[int] = None,
+        label_scale: float = 0.48,
+        label_thickness: int = 1,
+        event_overlay_enabled: bool = True,
+        event_overlay_position: str = "bottom-right",
+        event_overlay_max_lines: int = 5,
+        event_overlay_ttl_frames: int = 120,
+        event_overlay_scale: float = 0.46,
+        debug_overlay_enabled: bool = True,
+        debug_overlay_position: str = "bottom-left",
+        debug_overlay_max_lines: int = 4,
+        debug_overlay_ttl_frames: int = 150,
+        debug_overlay_scale: float = 0.42,
     ) -> None:
         classes = load_yaml(classes_config)
         risk_cfg = load_yaml(risk_config)
@@ -99,6 +130,21 @@ class ScreeningPipeline:
         self.draw_links = draw_links
         self.prefer_sam_masks = bool(prefer_sam_masks)
 
+        # Visualization/UI tuning for live demos. These affect only drawing and
+        # display readability; the saved tracking data and model outputs stay unchanged.
+        self.label_scale = float(label_scale)
+        self.label_thickness = max(1, int(label_thickness))
+        self.event_overlay_enabled = bool(event_overlay_enabled)
+        self.event_overlay_position = str(event_overlay_position)
+        self.event_overlay_max_lines = max(1, int(event_overlay_max_lines))
+        self.event_overlay_ttl_frames = max(1, int(event_overlay_ttl_frames))
+        self.event_overlay_scale = float(event_overlay_scale)
+        self.debug_overlay_enabled = bool(debug_overlay_enabled)
+        self.debug_overlay_position = str(debug_overlay_position)
+        self.debug_overlay_max_lines = max(1, int(debug_overlay_max_lines))
+        self.debug_overlay_ttl_frames = max(1, int(debug_overlay_ttl_frames))
+        self.debug_overlay_scale = float(debug_overlay_scale)
+
         # Important: SAM masks are useful for precise object/weapon/bag shape,
         # but they can make person tracking worse in CPU webcam demos because
         # masks are sparse, stale between SAM passes, and unstable during overlap.
@@ -121,6 +167,7 @@ class ScreeningPipeline:
         self.person_low_conf_aspect_gate_below_conf = float(memory_cfg.get("person_low_conf_aspect_gate_below_conf", 0.65))
         self.person_low_conf_min_height_width_ratio = float(memory_cfg.get("person_low_conf_min_height_width_ratio", 1.15))
         self.same_class_nms_iou = float(memory_cfg.get("same_class_nms_iou", 0.82))
+        self.same_class_nms_iou_by_class = memory_cfg.get("same_class_nms_iou_by_class", {}) or {}
         self.pause_recording_on_face = bool(pause_recording_on_face)
 
         roi_cfg_dict = dict(memory_cfg.get("roi_inner_search", {}) or {})
@@ -158,6 +205,81 @@ class ScreeningPipeline:
             imgsz=imgsz,
             device=device,
         )
+
+        secondary_cfg = risk_cfg.get("secondary_detector", {}) or {}
+        self.secondary_detector: Optional[YoloDetector] = None
+        self.secondary_target_classes = self._normalize_class_set(
+            secondary_target_classes
+            if secondary_target_classes is not None
+            else secondary_cfg.get("target_classes", list(self.risk_classes))
+        )
+        self.secondary_conf = float(
+            secondary_conf
+            if secondary_conf is not None
+            else secondary_cfg.get("conf", 0.35)
+        )
+        self.secondary_imgsz = int(
+            secondary_imgsz
+            if secondary_imgsz is not None
+            else secondary_cfg.get("imgsz", imgsz)
+        )
+        cfg_secondary_iou = secondary_cfg.get("iou", None)
+        self.secondary_iou = (
+            float(secondary_iou)
+            if secondary_iou is not None
+            else (float(cfg_secondary_iou) if cfg_secondary_iou is not None else None)
+        )
+        cfg_secondary_max_det = secondary_cfg.get("max_det", None)
+        self.secondary_max_det = (
+            int(secondary_max_det)
+            if secondary_max_det is not None
+            else (int(cfg_secondary_max_det) if cfg_secondary_max_det is not None else None)
+        )
+        if secondary_weights is not None and str(secondary_weights).strip():
+            self.secondary_detector = YoloDetector(
+                weights=str(secondary_weights),
+                tracker_config=tracker_config,
+                conf=self.secondary_conf,
+                imgsz=self.secondary_imgsz,
+                device=device,
+            )
+            target_text = "all classes" if self.secondary_target_classes is None else ",".join(sorted(self.secondary_target_classes))
+            print(f"[Secondary YOLO] {secondary_weights} -> {target_text}")
+
+        risk_confirmation_cfg = risk_cfg.get("risk_confirmation", {}) or {}
+        smoothing_enabled = bool(risk_confirmation_cfg.get("enabled", True))
+        if risk_smoothing_enabled is not None:
+            smoothing_enabled = bool(risk_smoothing_enabled)
+        confirmation_classes = self._normalize_class_set(
+            risk_confirmation_cfg.get("classes", list(self.risk_classes))
+        ) or set(self.risk_classes)
+        self.risk_confirmation = RiskConfirmationFilter(
+            classes=set(confirmation_classes),
+            enabled=smoothing_enabled,
+            window_frames=int(weapon_confirm_window if weapon_confirm_window is not None else risk_confirmation_cfg.get("window_frames", 5)),
+            min_hits=int(weapon_confirm_min_hits if weapon_confirm_min_hits is not None else risk_confirmation_cfg.get("min_hits", 3)),
+            match_iou=float(weapon_confirm_match_iou if weapon_confirm_match_iou is not None else risk_confirmation_cfg.get("match_iou", 0.10)),
+            match_center_distance_px=float(weapon_confirm_match_center_px if weapon_confirm_match_center_px is not None else risk_confirmation_cfg.get("match_center_distance_px", 140.0)),
+        )
+
+        risk_cluster_cfg = risk_cfg.get("risk_cluster", {}) or {}
+        cluster_classes = self._normalize_class_set(risk_cluster_cfg.get("classes", list(self.risk_classes))) or set(self.risk_classes)
+        self.risk_cluster_manager = RiskClusterManager(
+            classes=set(cluster_classes),
+            enabled=bool(risk_cluster_enabled if risk_cluster_enabled is not None else risk_cluster_cfg.get("enabled", True)),
+            match_iou=float(risk_cluster_match_iou if risk_cluster_match_iou is not None else risk_cluster_cfg.get("match_iou", 0.08)),
+            match_center_distance_px=float(risk_cluster_match_center_px if risk_cluster_match_center_px is not None else risk_cluster_cfg.get("match_center_distance_px", 95.0)),
+            ttl_frames=int(risk_cluster_ttl_frames if risk_cluster_ttl_frames is not None else risk_cluster_cfg.get("ttl_frames", 45)),
+            owner_link_gap_frames=int(risk_cluster_cfg.get("owner_link_gap_frames", 3)),
+            warning_cooldown_frames=int(risk_warning_cooldown_frames if risk_warning_cooldown_frames is not None else risk_cluster_cfg.get("warning_cooldown_frames", 30)),
+            confirmed_linked_frames=int(risk_confirm_linked_frames if risk_confirm_linked_frames is not None else risk_cluster_cfg.get("confirmed_linked_frames", 30)),
+            confirmed_cooldown_frames=int(risk_cluster_cfg.get("confirmed_cooldown_frames", 120)),
+            repeated_warning_window_frames=int(risk_repeat_warning_window_frames if risk_repeat_warning_window_frames is not None else risk_cluster_cfg.get("repeated_warning_window_frames", 300)),
+            repeated_warning_count=int(risk_repeat_warning_count if risk_repeat_warning_count is not None else risk_cluster_cfg.get("repeated_warning_count", 10)),
+            repeated_warning_cooldown_frames=int(risk_cluster_cfg.get("repeated_warning_cooldown_frames", 300)),
+            high_confidence_warning=float(risk_cluster_cfg.get("high_confidence_warning", 0.85)),
+        )
+
         self.segmenter = SamBoxSegmenter(weights=sam_weights, enabled=enable_sam, device=device)
         self.roi_search = NestedRoiObjectSearch(self.detector, self.roi_search_config)
         self.sam_every_n_frames = max(1, int(sam_every_n_frames))
@@ -210,7 +332,8 @@ class ScreeningPipeline:
             risk_detection_cooldown_frames=int(risk_cfg.get("risk_detection_cooldown_frames", 30)),
         )
         self.events: list[Event] = []
-        self.recent_messages: list[str] = []
+        self.recent_alert_messages: list[tuple[int, str, str]] = []
+        self.recent_debug_messages: list[tuple[int, str, str]] = []
         self.track_rows: list[dict[str, object]] = []
         self.last_reid_message_frame: dict[int, int] = {}
         self.reid_message_cooldown_frames = int(memory_cfg.get("reid_message_cooldown_frames", 90))
@@ -234,6 +357,9 @@ class ScreeningPipeline:
         output_tracks_csv: Optional[str] = "outputs/tracks.csv",
         display: bool = False,
         max_frames: Optional[int] = None,
+        display_scale: float = 1.0,
+        display_width: Optional[int] = None,
+        display_height: Optional[int] = None,
     ) -> None:
         parsed_source = parse_source(source)
         cap = cv2.VideoCapture(parsed_source)
@@ -269,6 +395,14 @@ class ScreeningPipeline:
         last_time = time.perf_counter()
         smoothed_fps = 0.0
 
+        window_name = "Screening AI Prototype"
+        if display:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            target_w = int(display_width) if display_width is not None else int(width * max(float(display_scale), 0.1))
+            target_h = int(display_height) if display_height is not None else int(height * max(float(display_scale), 0.1))
+            if target_w > 0 and target_h > 0:
+                cv2.resizeWindow(window_name, target_w, target_h)
+
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -281,7 +415,7 @@ class ScreeningPipeline:
             smoothed_fps = instant_fps if smoothed_fps == 0 else 0.9 * smoothed_fps + 0.1 * instant_fps
 
             annotated = self.process_frame(frame, frame_idx)
-            draw_fps(annotated, smoothed_fps)
+            draw_fps(annotated, smoothed_fps, scale=self.label_scale, thickness=self.label_thickness)
 
             face_visible = False
             if self.pause_recording_on_face:
@@ -303,7 +437,7 @@ class ScreeningPipeline:
                 writer.write(annotated)
 
             if display:
-                cv2.imshow("Screening AI Prototype", annotated)
+                cv2.imshow(window_name, annotated)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
@@ -337,6 +471,8 @@ class ScreeningPipeline:
             "local_tracker_id",
             "class_name",
             "detection_source",
+            "risk_cluster_id",
+            "risk_cluster_state",
             "parent_class_name",
             "roi_level",
             "confidence",
@@ -458,7 +594,8 @@ class ScreeningPipeline:
             for prev in kept:
                 if prev.class_name != det.class_name:
                     continue
-                if bbox_iou_xyxy(prev.bbox_xyxy, det.bbox_xyxy) >= self.same_class_nms_iou:
+                duplicate_iou = float(self.same_class_nms_iou_by_class.get(det.class_name, self.same_class_nms_iou))
+                if bbox_iou_xyxy(prev.bbox_xyxy, det.bbox_xyxy) >= duplicate_iou:
                     duplicate = True
                     break
             if not duplicate:
@@ -509,8 +646,45 @@ class ScreeningPipeline:
     def _prefer_mask_for_class(self, class_name: str) -> bool:
         return self.prefer_sam_masks and class_name in self.sam_tracking_classes
 
+    def _secondary_detect_frame(self, frame) -> list[Detection]:
+        if self.secondary_detector is None:
+            return []
+
+        detections = self.secondary_detector.detect_frame(
+            frame,
+            conf=self.secondary_conf,
+            imgsz=self.secondary_imgsz,
+            iou=self.secondary_iou,
+            max_det=self.secondary_max_det,
+            source="secondary",
+        )
+        if self.secondary_target_classes is None:
+            return detections
+        return [det for det in detections if det.class_name in self.secondary_target_classes]
+
+    def _apply_risk_confirmation(self, frame_idx: int, detections: list[Detection]) -> list[Detection]:
+        if not detections or not self.risk_classes:
+            return detections
+
+        risk_detections = [det for det in detections if det.class_name in self.risk_classes]
+        self.risk_confirmation.update(frame_idx, risk_detections)
+
+        confirmed: list[Detection] = []
+        for det in detections:
+            if det.class_name not in self.risk_classes:
+                confirmed.append(det)
+                continue
+            if self.risk_confirmation.is_confirmed(det, frame_idx):
+                confirmed.append(det)
+        return confirmed
+
     def process_frame(self, frame, frame_idx: int):
         detections = self.detector.track_frame(frame)
+
+        secondary_detections = self._secondary_detect_frame(frame)
+        if secondary_detections:
+            detections.extend(secondary_detections)
+
         detections = self._filter_detections(frame, detections)
 
         # Second-pass ROI search: run plain YOLO detection inside selected
@@ -521,6 +695,8 @@ class ScreeningPipeline:
         roi_detections = self.roi_search.find_inner_detections(frame, frame_idx, detections)
         if roi_detections:
             detections = self._filter_detections(frame, detections + roi_detections)
+
+        detections = self._apply_risk_confirmation(frame_idx, detections)
 
         seen_global_ids: set[int] = set()
         frame_events: list[Event] = []
@@ -552,7 +728,7 @@ class ScreeningPipeline:
             resolutions.append(resolution)
             seen_global_ids.add(resolution.global_id)
 
-            if resolution.was_reidentified:
+            if resolution.was_reidentified and det.class_name not in self.risk_classes:
                 if resolution.merged_from_global_id is not None:
                     self._rewrite_previous_track_rows(
                         old_global_id=resolution.merged_from_global_id,
@@ -647,19 +823,33 @@ class ScreeningPipeline:
                 separation_distance_px=self.risk_owner_separation_distance_px,
             )
 
+        risk_clusters_by_global_id: dict[int, RiskCluster] = {}
+
+        for det, resolution, seg, memory in frame_items:
+            if det.class_name not in self.risk_classes:
+                continue
+            cluster, cluster_events = self.risk_cluster_manager.update_detection(
+                frame_idx=frame_idx,
+                class_name=det.class_name,
+                bbox_xyxy=memory.smoothed_bbox_xyxy,
+                confidence=det.confidence,
+                owner_id=memory.owner_id,
+                source_track_id=resolution.global_id,
+            )
+            if cluster is not None:
+                risk_clusters_by_global_id[int(resolution.global_id)] = cluster
+            frame_events.extend(cluster_events)
+
         for det, resolution, seg, memory in frame_items:
             mask = seg.mask if seg is not None else None
             is_risk = det.class_name in self.risk_classes
-
-            frame_events.extend(
-                self.risk_engine.detection_events(
-                    frame_idx=frame_idx,
-                    track_id=resolution.global_id,
-                    class_name=det.class_name,
-                    confidence=det.confidence,
-                    owner_id=memory.owner_id,
-                )
-            )
+            risk_cluster = risk_clusters_by_global_id.get(int(resolution.global_id)) if is_risk else None
+            display_label = None
+            if is_risk:
+                cluster_id = risk_cluster.cluster_id if risk_cluster is not None else "R?"
+                state = (risk_cluster.display_state if risk_cluster is not None else "possible").upper()
+                owner_text = f" ->G{memory.owner_id}" if memory.owner_id is not None else ""
+                display_label = f"{state} {det.class_name} {cluster_id} {det.confidence:.2f}{owner_text}"
 
             draw_detection(
                 frame=frame,
@@ -672,8 +862,11 @@ class ScreeningPipeline:
                 local_tracker_id=resolution.local_tracker_id,
                 reidentified_count=memory.reidentified_count,
                 is_risk=is_risk,
+                label_scale=self.label_scale,
+                label_thickness=self.label_thickness,
+                display_label=display_label,
             )
-            self._record_track_row(frame_idx, memory, det)
+            self._record_track_row(frame_idx, memory, det, risk_cluster=risk_cluster)
 
         frame_events.extend(self.risk_engine.unattended_bag_events(frame_idx, self.memory_bank))
 
@@ -684,20 +877,80 @@ class ScreeningPipeline:
                 frame,
                 owner_link_lines(
                     self.memory_bank,
-                    self.bag_classes | self.risk_classes,
+                    self.bag_classes,
                     max_missing_frames=self.owner_link_display_max_missing_frames,
                     min_link_strength=self.owner_link_display_min_strength,
                     risk_classes=self.risk_classes,
                 ),
+                label_scale=max(0.35, self.label_scale * 0.88),
+                label_thickness=self.label_thickness,
             )
 
         if frame_events:
             self.events.extend(frame_events)
-            self.recent_messages.extend(event.message for event in frame_events)
-            self.recent_messages = self.recent_messages[-10:]
+            for event in frame_events:
+                self._remember_event_message(frame_idx, event)
 
-        draw_event_banner(frame, self.recent_messages)
+        if self.event_overlay_enabled:
+            active_alerts = self._active_messages(
+                self.recent_alert_messages,
+                frame_idx=frame_idx,
+                ttl_frames=self.event_overlay_ttl_frames,
+            )
+            self.recent_alert_messages = active_alerts[-30:]
+            draw_event_banner(
+                frame,
+                active_alerts,
+                position=self.event_overlay_position,
+                max_lines=self.event_overlay_max_lines,
+                scale=self.event_overlay_scale,
+                thickness=self.label_thickness,
+                title="SECURITY ALERTS",
+            )
+
+        if self.debug_overlay_enabled:
+            active_debug = self._active_messages(
+                self.recent_debug_messages,
+                frame_idx=frame_idx,
+                ttl_frames=self.debug_overlay_ttl_frames,
+            )
+            self.recent_debug_messages = active_debug[-30:]
+            draw_event_banner(
+                frame,
+                active_debug,
+                position=self.debug_overlay_position,
+                max_lines=self.debug_overlay_max_lines,
+                scale=self.debug_overlay_scale,
+                thickness=self.label_thickness,
+                title="TRACKING DEBUG",
+            )
         return frame
+
+    def _remember_event_message(self, frame_idx: int, event: Event) -> None:
+        item = (int(frame_idx), str(event.type), str(event.message))
+        if self._is_debug_event(event):
+            self.recent_debug_messages.append(item)
+            self.recent_debug_messages = self.recent_debug_messages[-30:]
+        else:
+            self.recent_alert_messages.append(item)
+            self.recent_alert_messages = self.recent_alert_messages[-30:]
+
+    @staticmethod
+    def _is_debug_event(event: Event) -> bool:
+        event_type = str(event.type).lower()
+        return "reidentified" in event_type or "merge" in event_type or event_type.startswith("track_")
+
+    @staticmethod
+    def _active_messages(
+        messages: list[tuple[int, str, str]],
+        frame_idx: int,
+        ttl_frames: int,
+    ) -> list[tuple[int, str, str]]:
+        return [
+            item
+            for item in messages
+            if int(frame_idx) - int(item[0]) <= int(ttl_frames)
+        ]
 
     def _rewrite_previous_track_rows(self, old_global_id: int, new_global_id: int) -> None:
         """Rewrite already-collected CSV rows after an ID rollback/merge."""
@@ -860,7 +1113,7 @@ class ScreeningPipeline:
                 event.message = event.message.replace(f"track {old_id}", f"track {new_id}")
 
 
-    def _record_track_row(self, frame_idx: int, memory, detection: Optional[Detection] = None) -> None:
+    def _record_track_row(self, frame_idx: int, memory, detection: Optional[Detection] = None, risk_cluster: RiskCluster | None = None) -> None:
         x1, y1, x2, y2 = memory.smoothed_bbox_xyxy.astype(float)
         cx, cy = memory.last_center
         self.track_rows.append(
@@ -872,6 +1125,8 @@ class ScreeningPipeline:
                 "local_tracker_id": "" if memory.local_tracker_id is None else int(memory.local_tracker_id),
                 "class_name": memory.class_name,
                 "detection_source": "" if detection is None else detection.source,
+                "risk_cluster_id": "" if risk_cluster is None else risk_cluster.cluster_id,
+                "risk_cluster_state": "" if risk_cluster is None else risk_cluster.display_state,
                 "parent_class_name": "" if detection is None or detection.parent_class_name is None else detection.parent_class_name,
                 "roi_level": "" if detection is None else int(detection.roi_level),
                 "confidence": float(memory.last_confidence),

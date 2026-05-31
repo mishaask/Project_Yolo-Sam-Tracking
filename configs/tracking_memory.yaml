@@ -85,12 +85,20 @@ person_low_conf_aspect_gate_below_conf: 0.70
 person_low_conf_min_height_width_ratio: 1.15
 
 same_class_nms_iou: 0.78
+# Lower duplicate IoU for compact risk objects to reduce repeated boxes around
+# the same visible item before temporal confirmation.
+same_class_nms_iou_by_class:
+  knife: 0.45
+  gun: 0.45
+  weapon: 0.45
+  dangerous_object: 0.45
+  suspicious_object: 0.45
 reid_message_cooldown_frames: 120
 trail_length: 70
 
 # Classes whose SAM masks may affect memory/tracking geometry when --prefer-sam-masks is used.
 # Person is intentionally excluded: YOLO/BoT-SORT boxes are usually more stable for person ReID.
-sam_tracking_classes: ["backpack", "handbag", "suitcase", "trolley_bag", "suspicious_object", "dangerous_object", "knife", "weapon"]
+sam_tracking_classes: ["backpack", "handbag", "suitcase", "trolley_bag", "suspicious_object", "dangerous_object", "knife", "gun", "weapon"]
 
 # Strict OSNet person ReID.
 # This version does NOT silently use the generic Torchvision fallback by default.

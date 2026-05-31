@@ -88,6 +88,9 @@ class YoloDetector:
         frame: np.ndarray,
         conf: Optional[float] = None,
         imgsz: Optional[int] = None,
+        iou: Optional[float] = None,
+        max_det: Optional[int] = None,
+        source: str = "predict",
     ) -> list[Detection]:
         """Run plain YOLO detection without updating the tracker state.
 
@@ -102,6 +105,10 @@ class YoloDetector:
             "imgsz": self.imgsz if imgsz is None else int(imgsz),
             "verbose": False,
         }
+        if iou is not None:
+            kwargs["iou"] = float(iou)
+        if max_det is not None:
+            kwargs["max_det"] = int(max_det)
         if self.device is not None:
             kwargs["device"] = self.device
 
@@ -127,7 +134,7 @@ class YoloDetector:
                     class_name=class_name,
                     confidence=float(confidence),
                     track_id=None,
-                    source="predict",
+                    source=source,
                 )
             )
         return detections
