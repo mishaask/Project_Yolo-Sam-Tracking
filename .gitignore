@@ -21,3 +21,6 @@ outputs/
 *.pt
 *.pth
 *.onnx
+# allow committing this specific model
+!weights/
+!weights/weapons_v3.pt
