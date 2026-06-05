@@ -24,3 +24,4 @@ outputs/
 # allow committing this specific model
 !weights/
 !weights/weapons_v3.pt
+!weights/weapons_v4.pt
