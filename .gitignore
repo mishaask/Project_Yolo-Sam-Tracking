@@ -15,3 +15,13 @@ input/*.mov
 datasets/screening_dataset/images/
 datasets/screening_dataset/labels/
 datasets/weapon_dataset/
+datasets/
+runs/
+outputs/
+*.pt
+*.pth
+*.onnx
+# allow committing this specific model
+!weights/
+!weights/weapons_v3.pt
+!weights/weapons_v4.pt
