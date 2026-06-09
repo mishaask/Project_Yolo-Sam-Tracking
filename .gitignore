@@ -25,3 +25,4 @@ outputs/
 !weights/
 !weights/weapons_v3.pt
 !weights/weapons_v4.pt
+!weights/weapons_v5.pt
