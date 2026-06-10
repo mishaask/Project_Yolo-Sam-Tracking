@@ -25,4 +25,6 @@ outputs/
 !weights/
 !weights/weapons_v3.pt
 !weights/weapons_v4.pt
+!weights/best_v2_finetuned.pt
+!weights/best_v2_surveillance.pt
 !weights/weapons_v5.pt
